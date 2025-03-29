@@ -250,6 +250,14 @@ impl Request {
     }
 }
 
+struct Response {
+    http_version: String,
+    status_code: u16,
+    reason_phrase: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
 /// Handles an HTTP connection
 ///
 /// Arguments:
@@ -267,6 +275,8 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
             thread::sleep(std::time::Duration::from_secs(10));
             ("HTTP/1.1 200 OK", "home.html")
         },
+        (Method::Get, "/upload") => ("HTTP/1.1 200 OK", "upload.html"),
+        (Method::Get, "/files") => ("HTTP/1.1 200 OK", "files.html"),
         _ => ("HTTP/1.1 404 NOT FOUND", "404.html"),
     };
 
