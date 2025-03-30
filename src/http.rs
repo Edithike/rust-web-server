@@ -46,7 +46,7 @@ impl TryFrom<String> for HttpMethod {
     type Error = String;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let method = match value.as_str() {
+        let method = match value.to_uppercase().as_str() {
             "GET" => HttpMethod::Get,
             "POST" => HttpMethod::Post,
             "PUT" => HttpMethod::Put,
