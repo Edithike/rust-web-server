@@ -1,11 +1,10 @@
+use crate::file_manager::UploadedFile;
 use crate::handlers::ErrorHandler;
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::path::Path;
 use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 
 mod helpers {
     use std::path::Path;
@@ -86,10 +85,10 @@ pub(crate) struct Request {
     pub(crate) method: HttpMethod,
     http_version: String,
     headers: HashMap<String, String>,
-    body: RequestBody,
+    pub(crate) body: RequestBody,
 }
 
-enum RequestBody {
+pub(crate) enum RequestBody {
     Multipart(UploadedFile),
     Empty,
 }
@@ -108,74 +107,6 @@ pub(crate) enum ResponseBody {
     File(String),
     Text(String),
     Empty,
-}
-
-impl TryFrom<ResponseBody> for Option<UploadedFile> {
-    type Error = String;
-
-    fn try_from(value: ResponseBody) -> Result<Self, Self::Error> {
-        match value {
-            ResponseBody::File(filename) => {
-                let path = Path::new(&filename);
-                let uploaded_file = UploadedFile::try_from(path)?;
-                Ok(Some(uploaded_file))
-            }
-            ResponseBody::Text(text) => {
-                let uploaded_file = UploadedFile {
-                    name: "response.html".to_string(),
-                    content: text.as_bytes().to_vec(),
-                };
-                Ok(Some(uploaded_file))
-            }
-            ResponseBody::Empty => Ok(None),
-        }
-    }
-}
-
-impl TryFrom<&Path> for UploadedFile {
-    type Error = String;
-
-    fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        if !path.exists() {
-            return Err(format!("File does not exist: {}", path.display()));
-        }
-        if path.is_dir() {
-            return Err(format!("Path is a directory: {}", path.display()));
-        }
-        let file_name = path
-            .file_name()
-            .ok_or("Error reading file name")?
-            .to_str()
-            .ok_or("Error reading file name")?;
-
-        let mut file = match File::open(path) {
-            Ok(file) => file,
-            Err(_) => {
-                return Err("File failed to open".to_string());
-            }
-        };
-
-        let mut file_buffer = Vec::new();
-        file.read_to_end(&mut file_buffer).unwrap();
-
-        Ok(UploadedFile {
-            name: file_name.to_string(),
-            content: file_buffer,
-        })
-    }
-}
-
-struct UploadedFile {
-    name: String,
-    content: Vec<u8>,
-}
-
-impl Display for UploadedFile {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let content = String::from_utf8(self.content.clone())
-            .unwrap_or_else(|_| "File is not text based".to_string());
-        write!(f, "Filename: {}\nFile content: {}", self.name, content)
-    }
 }
 
 impl Request {
@@ -330,9 +261,22 @@ impl BodyExtractor for MultiPartForm {
         let boundary = boundary.trim();
 
         let mut form_body = String::new();
-        buf_reader
-            .read_to_string(&mut form_body)
-            .map_err(|_| "Failed to read form body")?;
+        loop {
+            let mut line = String::new();
+            let bytes_read = buf_reader
+                .read_line(&mut line)
+                .map_err(|_| "Failed to read form data")?;
+
+            if bytes_read == 0 {
+                break; // Stop at EOF
+            }
+
+            form_body.push_str(&line);
+
+            if line.trim() == format!("--{boundary}--") {
+                break; // Stop at the ending boundary
+            }
+        }
 
         let form_body = form_body
             .trim()
@@ -390,6 +334,7 @@ impl Display for Request {
 #[derive(Debug)]
 pub(crate) enum HttpStatus {
     Ok,
+    SeeOther,
     Forbidden,
     NotFound,
     ServerError,
@@ -399,6 +344,7 @@ impl HttpStatus {
     fn get_status_code(&self) -> u16 {
         match self {
             HttpStatus::Ok => 200,
+            HttpStatus::SeeOther => 303,
             HttpStatus::Forbidden => 403,
             HttpStatus::NotFound => 404,
             HttpStatus::ServerError => 500,
@@ -408,6 +354,7 @@ impl HttpStatus {
     fn get_reason_phrase(&self) -> String {
         match self {
             HttpStatus::Ok => "OK".to_string(),
+            HttpStatus::SeeOther => "SEE OTHER".to_string(),
             HttpStatus::Forbidden => "FORBIDDEN".to_string(),
             HttpStatus::NotFound => "NOT FOUND".to_string(),
             HttpStatus::ServerError => "SERVER ERROR".to_string(),
@@ -415,12 +362,13 @@ impl HttpStatus {
     }
 }
 
-struct HttpHeader;
+pub(crate) struct HttpHeader;
 
 impl HttpHeader {
-    const CONTENT_LENGTH: &'static str = "Content-Length";
-    const CONTENT_TYPE: &'static str = "Content-Type";
-    const CONTENT_DISPOSITION: &'static str = "Content-Disposition";
+    pub(crate) const CONTENT_LENGTH: &'static str = "Content-Length";
+    pub(crate) const CONTENT_TYPE: &'static str = "Content-Type";
+    pub(crate) const CONTENT_DISPOSITION: &'static str = "Content-Disposition";
+    pub(crate) const LOCATION: &'static str = "Location";
 }
 
 #[derive(Default)]
@@ -440,7 +388,7 @@ impl ResponseBuilder {
         self
     }
 
-    fn header(mut self, name: &str, value: &str) -> Self {
+    pub(crate) fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.insert(name.to_string(), value.to_string());
         self
     }
@@ -490,7 +438,7 @@ impl Response {
             "{} {} {}\r\n",
             self.http_version, status_code, reason_phrase
         )
-            .unwrap();
+        .unwrap();
 
         let file: Option<UploadedFile> = self.body.try_into().map_err(|e| {
             println!("Failed to convert body to uploaded file: {:?}", e);

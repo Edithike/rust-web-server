@@ -1,37 +1,22 @@
+use crate::file_manager::{list_files_with_paths, save_file};
+use crate::http::{HttpHeader, HttpStatus, RequestBody, Response, ResponseBody};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use crate::http::{HttpStatus, Response, ResponseBody};
-
-mod helpers {
-    use std::fs;
-
-    pub(super) fn list_files_with_paths(dir: &str) -> std::io::Result<Vec<(String, String)>> {
-        let mut files = Vec::new();
-
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let file_name = entry.file_name().into_string().unwrap_or_default();
-            let full_path = path.to_string_lossy().into_owned();
-            files.push((file_name, full_path));
-        }
-
-        Ok(files)
-    }
-}
 
 pub(crate) struct RequestHandler;
 
 impl RequestHandler {
     pub(crate) fn list_files() -> Result<Response, Response> {
-        let mut html_file = File::open("templates/index.html").map_err(|_| ErrorHandler::handle_server_error())?;
+        let mut html_file =
+            File::open("templates/index.html").map_err(|_| ErrorHandler::handle_server_error())?;
         let mut template = String::new();
         html_file
             .read_to_string(&mut template)
             .map_err(|_| ErrorHandler::handle_server_error())?;
 
-        let files = helpers::list_files_with_paths("uploads").map_err(|_| ErrorHandler::handle_server_error())?;
+        let files =
+            list_files_with_paths("uploads").map_err(|_| ErrorHandler::handle_server_error())?;
 
         let file_links: String = files
             .iter()
@@ -85,6 +70,40 @@ impl RequestHandler {
             .build())
     }
 
+    pub(crate) fn upload_file(request_body: RequestBody) -> Result<Response, Response> {
+        let uploaded_file = match request_body {
+            RequestBody::Multipart(uploaded_file) => uploaded_file,
+            _ => return Err(ErrorHandler::handle_bad_request()),
+        };
+        
+        let allowed_extensions = ["txt", "png", "jpg", "pdf"];
+
+        // Sanitize file name in case it contains unanticipated characters
+        let sanitized_filename = Path::new(&uploaded_file.name)
+            .file_name() // Extracts only the base file name, removing paths
+            .and_then(|name| name.to_str()) // Convert to &str
+            .ok_or(ErrorHandler::handle_bad_request())? // Fallback in case of invalid Unicode
+            .to_string();
+
+        if sanitized_filename.is_empty() || sanitized_filename != uploaded_file.name {
+            return Err(ErrorHandler::handle_bad_request());
+        }
+
+        // Assert that file is an allowed type
+        Path::new(&uploaded_file.name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| allowed_extensions.contains(&ext))
+            .ok_or(ErrorHandler::handle_bad_request())?;
+
+        save_file("uploads", uploaded_file).map_err(|_| ErrorHandler::handle_server_error())?;
+
+        Ok(Response::builder()
+            .status(HttpStatus::SeeOther)
+            .header(HttpHeader::LOCATION, "/")
+            .body(ResponseBody::Empty)
+            .build())
+    }
 }
 
 pub(crate) struct ErrorHandler;
@@ -99,12 +118,10 @@ impl ErrorHandler {
             .build()
     }
 
-    pub(crate) fn handle_invalid_file_request() -> Response {
+    pub(crate) fn handle_bad_request() -> Response {
         Response::builder()
             .status(HttpStatus::NotFound)
-            .body(ResponseBody::File(
-                "templates/file-not-found.html".to_string(),
-            ))
+            .body(ResponseBody::File("bad-request".to_string()))
             .build()
     }
 
@@ -113,6 +130,15 @@ impl ErrorHandler {
             .status(HttpStatus::Forbidden)
             .body(ResponseBody::File(
                 "templates/access-denied.html".to_string(),
+            ))
+            .build()
+    }
+
+    pub(crate) fn handle_invalid_file_request() -> Response {
+        Response::builder()
+            .status(HttpStatus::NotFound)
+            .body(ResponseBody::File(
+                "templates/file-not-found.html".to_string(),
             ))
             .build()
     }

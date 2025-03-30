@@ -1,3 +1,4 @@
+mod file_manager;
 mod handlers;
 mod http;
 
@@ -5,7 +6,7 @@ use crate::handlers::{ErrorHandler, RequestHandler};
 use crate::http::{HttpMethod, Request, Response};
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
@@ -103,7 +104,6 @@ impl ThreadPool {
     }
 }
 
-
 /// Handles an HTTP connection
 ///
 /// Arguments:
@@ -121,6 +121,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
             RequestHandler::view_file(file_path.to_string())
         }
         (HttpMethod::Get, "/upload") => RequestHandler::view_to_upload_files(),
+        (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
         _ => Err(ErrorHandler::handle_invalid_page_request()),
     };
 
