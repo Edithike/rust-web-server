@@ -104,57 +104,81 @@ impl ThreadPool {
     }
 }
 
-/// Handles an HTTP connection
-///
-/// Arguments:
-/// - **stream**: a mutable TcpStream that represents a single TCP connection or HTTP request
-///
-/// This method reads the stream using a BufReader and uses the request line to identify what path
-/// was called and how to handle each one.
-fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
-    let buf_reader = BufReader::new(&mut stream);
-    let request = Request::try_new(buf_reader)?;
+/// A `Server` is an abstraction of some of the logic that runs a web server and handles each TCP stream
+/// It holds the listener that listens for each HTTP request and the thread pool that assigns each
+/// request to an available thread.
+struct Server {
+    listener: TcpListener,
+    thread_pool: ThreadPool,
+}
 
-    let response: Result<Response, Response> = match (request.method, request.path.as_str()) {
-        (HttpMethod::Get, "/") => RequestHandler::list_files(),
-        (HttpMethod::Get, file_path) if file_path.starts_with("/uploads") => {
-            RequestHandler::view_file(file_path.to_string())
+impl Server {
+    /// Creates a new `Server`
+    /// 
+    /// Arguments:
+    /// - **server_address**: The host and port the server will run on
+    /// - **number_of_workers**: The number of threads that the server will have
+    fn new(server_address: &str, number_of_workers: usize) -> Server {
+        let listener = TcpListener::bind(&server_address).expect("Could not bind to address");
+        let thread_pool = ThreadPool::new(number_of_workers);
+
+        Server {
+            listener,
+            thread_pool,
         }
-        (HttpMethod::Get, "/upload") => RequestHandler::view_to_upload_files(),
-        (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
-        _ => Err(ErrorHandler::handle_invalid_page_request()),
-    };
-
-    let response = response.unwrap_or_else(|response| response);
-
-    let (response_headers, response_body) = match response.to_http_response() {
-        Ok((response_headers, response_body)) => (response_headers, response_body),
-        Err(error) => error
-            .to_http_response()
-            .expect("Failed to convert response to http headers"),
-    };
-
-    stream
-        .write_all(&response_headers)
-        .map_err(|e| format!("Error writing response to stream: {}", e))?;
-    if let Some(body) = response_body {
-        stream
-            .write_all(&body)
-            .map_err(|e| format!("Error writing file to stream: {}", e))?;
     }
 
-    stream
-        .flush()
-        .map_err(|e| format!("Error flushing stream: {}", e))?;
-    Ok(())
+    /// Handles an HTTP connection
+    ///
+    /// Arguments:
+    /// - **stream**: a mutable TcpStream that represents a single HTTP request
+    ///
+    /// This method reads the stream using a BufReader and uses that to construct a new `Request`, the 
+    /// `Request`'s `method` and `path` determine what handler gets invoked. The handler returns a `Response`,
+    /// which is then cast into a byte buffer that gets written to the stream, ending the HTTP request.
+    fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
+        let buf_reader = BufReader::new(&mut stream);
+        let request = Request::try_new(buf_reader)?;
+
+        let response: Result<Response, Response> = match (request.method, request.path.as_str()) {
+            (HttpMethod::Get, "/") => RequestHandler::list_files(),
+            (HttpMethod::Get, file_path) if file_path.starts_with("/uploads") => {
+                RequestHandler::view_file(file_path.to_string())
+            }
+            (HttpMethod::Get, "/upload") => RequestHandler::view_to_upload_files(),
+            (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
+            _ => Err(ErrorHandler::handle_invalid_page_request()),
+        };
+
+        let response = response.unwrap_or_else(|response| response);
+
+        let (response_headers, response_body) = match response.to_http_response() {
+            Ok((response_headers, response_body)) => (response_headers, response_body),
+            Err(error) => error
+                .to_http_response()
+                .expect("Failed to convert response to http headers"),
+        };
+
+        stream
+            .write_all(&response_headers)
+            .map_err(|e| format!("Error writing response to stream: {}", e))?;
+        if let Some(body) = response_body {
+            stream
+                .write_all(&body)
+                .map_err(|e| format!("Error writing file to stream: {}", e))?;
+        }
+
+        stream
+            .flush()
+            .map_err(|e| format!("Error flushing stream: {}", e))?;
+        Ok(())
+    }
 }
 
 fn main() {
-    let listener = TcpListener::bind("localhost:7878").expect("Could not bind to localhost:7878");
+    let server = Server::new("localhost:7878", 4);
 
-    let pool = ThreadPool::new(4);
-
-    for stream in listener.incoming() {
+    for stream in server.listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
             Err(e) => {
@@ -163,6 +187,6 @@ fn main() {
             }
         };
 
-        pool.execute(move || handle_connection(stream));
+        server.thread_pool.execute(move || Server::handle_connection(stream));
     }
 }
