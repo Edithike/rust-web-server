@@ -1,0 +1,8 @@
+This is a dummy text file🙂
+It contains plain text and should be renderable in a browser
+
+To-do List:
+1. Wake up
+2. Brush teeth
+
+It contains Unicode character, from letters, numbers, punctuations and emojis.

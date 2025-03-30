@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, format};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
-use std::{fmt, thread};
+use std::{fmt, fs, thread};
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
 type Job = Box<dyn FnOnce() -> Result<(), String> + Send + 'static>;
@@ -34,7 +34,7 @@ impl Worker {
                     .expect(format!("Worker {id} unable to acquire mutex lock").as_str())
                     .recv()
                     .expect(format!("Worker {id} failed to receive job from channel").as_str());
-                
+
                 match job() {
                     Ok(()) => {}
                     Err(e) => {
@@ -176,8 +176,10 @@ impl Display for RequestBody {
     }
 }
 
+#[derive(Debug)]
 enum ResponseBody {
     File(String),
+    Text(String),
     Empty,
 }
 
@@ -191,6 +193,13 @@ impl TryFrom<ResponseBody> for Option<UploadedFile> {
                 let uploaded_file = UploadedFile::try_from(path)?;
                 Ok(Some(uploaded_file))
             }
+            ResponseBody::Text(text) => {
+                let uploaded_file = UploadedFile {
+                    name: "response.html".to_string(),
+                    content: text.as_bytes().to_vec(),
+                };
+                Ok(Some(uploaded_file))
+            }
             ResponseBody::Empty => Ok(None),
         }
     }
@@ -200,8 +209,11 @@ impl TryFrom<&Path> for UploadedFile {
     type Error = String;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        if !path.exists() || path.is_dir() {
-            return Err("File does not exist".to_string());
+        if !path.exists() {
+            return Err(format!("File does not exist: {}", path.display()));
+        }
+        if path.is_dir() {
+            return Err(format!("Path is a directory: {}", path.display()));
         }
         let file_name = path
             .file_name()
@@ -212,7 +224,7 @@ impl TryFrom<&Path> for UploadedFile {
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(_) => {
-                return Err("File does not exist".to_string());
+                return Err("File failed to open".to_string());
             }
         };
 
@@ -448,8 +460,10 @@ impl Display for Request {
     }
 }
 
+#[derive(Debug)]
 enum HttpStatus {
     Ok,
+    Forbidden,
     NotFound,
     ServerError,
 }
@@ -458,6 +472,7 @@ impl HttpStatus {
     fn get_status_code(&self) -> u16 {
         match self {
             HttpStatus::Ok => 200,
+            HttpStatus::Forbidden => 403,
             HttpStatus::NotFound => 404,
             HttpStatus::ServerError => 500,
         }
@@ -466,6 +481,7 @@ impl HttpStatus {
     fn get_reason_phrase(&self) -> String {
         match self {
             HttpStatus::Ok => "OK".to_string(),
+            HttpStatus::Forbidden => "FORBIDDEN".to_string(),
             HttpStatus::NotFound => "NOT FOUND".to_string(),
             HttpStatus::ServerError => "SERVER ERROR".to_string(),
         }
@@ -514,6 +530,7 @@ impl ResponseBuilder {
     }
 }
 
+#[derive(Debug)]
 struct Response {
     http_version: String,
     status: HttpStatus,
@@ -535,7 +552,7 @@ impl Response {
         }
     }
 
-    fn to_http_response(mut self) -> (Vec<u8>, Option<Vec<u8>>) {
+    fn to_http_response(mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Response> {
         //TODO: remove all unwraps
         let mut headers_buffer = Vec::new();
 
@@ -548,7 +565,10 @@ impl Response {
         )
         .unwrap();
 
-        let file: Option<UploadedFile> = self.body.try_into().unwrap();
+        let file: Option<UploadedFile> = self.body.try_into().map_err(|e| {
+            println!("Failed to convert body to uploaded file: {:?}", e);
+            ErrorHandler::handle_invalid_file_request()
+        })?;
 
         let body_buffer = match file {
             Some(file) => {
@@ -584,7 +604,7 @@ impl Response {
         }
         write!(headers_buffer, "\r\n").unwrap();
 
-        (headers_buffer, body_buffer)
+        Ok((headers_buffer, body_buffer))
     }
 }
 
@@ -606,10 +626,87 @@ impl Display for Response {
 
         // Add a blank line to separate headers from body
         write!(f, "\r\n")
-
-        // Add body
-        // write!(f, "{}", self.body)
     }
+}
+
+fn list_files_with_paths(dir: &str) -> std::io::Result<Vec<(String, String)>> {
+    let mut files = Vec::new();
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name().into_string().unwrap_or_default();
+        let full_path = path.to_string_lossy().into_owned();
+        files.push((file_name, full_path));
+    }
+
+    Ok(files)
+}
+
+struct RequestHandler;
+
+impl RequestHandler {
+    fn list_files() -> Result<Response, Response> {
+        let mut html_file = File::open("templates/index.html").map_err(|_| ErrorHandler::handle_server_error())?;
+        let mut template = String::new();
+        html_file
+            .read_to_string(&mut template)
+            .map_err(|_| ErrorHandler::handle_server_error())?;
+
+        let files = list_files_with_paths("uploads").map_err(|_| ErrorHandler::handle_server_error())?;
+
+        let file_links: String = files
+            .iter()
+            .map(|(name, path)| format!(r#"<li><a href="{}">{}</a></li>"#, path, name))
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        let html_output = template.replace("{{FILES_LIST}}", &file_links);
+
+        Ok(Response::builder()
+            .body(ResponseBody::Text(html_output))
+            .build())
+    }
+
+    fn view_file(filename: String) -> Result<Response, Response> {
+        let filename = filename
+            .trim_start_matches('/')
+            .trim_start_matches("uploads/");
+
+        let base_path = Path::new("uploads");
+        let requested_path = base_path.join(filename);
+
+        // Get the absolute path, removing all traversals, this protects from traversal attacks
+        match requested_path.canonicalize() {
+            Ok(resolved_path) => {
+                let canonicalized_base_path = base_path
+                    .canonicalize()
+                    .map_err(|_| ErrorHandler::handle_server_error())?;
+
+                // Assert that the path is still within the uploads directory
+                if resolved_path.starts_with(canonicalized_base_path) {
+                    Ok(Response::builder()
+                        .body(ResponseBody::File(
+                            resolved_path.to_string_lossy().to_string(),
+                        ))
+                        .build())
+                } else {
+                    Err(ErrorHandler::handle_access_denied())
+                }
+            }
+            Err(_) => {
+                eprintln!("Canonicalized file not found: {}", requested_path.display());
+                Err(ErrorHandler::handle_invalid_file_request())
+            }
+        }
+    }
+
+    fn view_to_upload_files() -> Result<Response, Response> {
+        Ok(Response::builder()
+            .body(ResponseBody::File("templates/upload.html".to_string()))
+            .build())
+    }
+
 }
 
 /// Handles an HTTP connection
@@ -623,23 +720,23 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
     let buf_reader = BufReader::new(&mut stream);
     let request = Request::try_new(buf_reader)?;
 
-    let response = match (request.method, request.path.as_str()) {
-        (Method::Get, "/") => Response::builder()
-            .body(ResponseBody::File("home.html".to_string()))
-            .build(),
-        (Method::Get, "/files") => Response::builder()
-            .body(ResponseBody::File("files.html".to_string()))
-            .build(),
-        (Method::Get, "/upload") => Response::builder()
-            .body(ResponseBody::File("upload.html".to_string()))
-            .build(),
-        _ => Response::builder()
-            .status(HttpStatus::NotFound)
-            .body(ResponseBody::File("404.html".to_string()))
-            .build(),
+    let response: Result<Response, Response> = match (request.method, request.path.as_str()) {
+        (Method::Get, "/") => RequestHandler::list_files(),
+        (Method::Get, file_path) if file_path.starts_with("/uploads") => {
+            RequestHandler::view_file(file_path.to_string())
+        }
+        (Method::Get, "/upload") => RequestHandler::view_to_upload_files(),
+        _ => Err(ErrorHandler::handle_invalid_page_request()),
     };
 
-    let (response_headers, response_body) = response.to_http_response();
+    let response = response.unwrap_or_else(|response| response);
+
+    let (response_headers, response_body) = match response.to_http_response() {
+        Ok((response_headers, response_body)) => (response_headers, response_body),
+        Err(error) => error
+            .to_http_response()
+            .expect("Failed to convert response to http headers"),
+    };
 
     stream
         .write_all(&response_headers)
@@ -674,9 +771,44 @@ fn get_content_type(file_path: &str) -> &str {
     }
 }
 
-fn send_404_response(stream: &mut TcpStream) {
-    let response = "HTTP/1.1 404 Not Found\r\n\r\n";
-    stream.write_all(response.as_bytes()).unwrap();
+struct ErrorHandler;
+
+impl ErrorHandler {
+    fn handle_invalid_page_request() -> Response {
+        Response::builder()
+            .status(HttpStatus::NotFound)
+            .body(ResponseBody::File(
+                "templates/page-not-found.html".to_string(),
+            ))
+            .build()
+    }
+
+    fn handle_invalid_file_request() -> Response {
+        Response::builder()
+            .status(HttpStatus::NotFound)
+            .body(ResponseBody::File(
+                "templates/file-not-found.html".to_string(),
+            ))
+            .build()
+    }
+
+    fn handle_access_denied() -> Response {
+        Response::builder()
+            .status(HttpStatus::Forbidden)
+            .body(ResponseBody::File(
+                "templates/access-denied.html".to_string(),
+            ))
+            .build()
+    }
+
+    fn handle_server_error() -> Response {
+        Response::builder()
+            .status(HttpStatus::ServerError)
+            .body(ResponseBody::File(
+                "templates/server-error.html".to_string(),
+            ))
+            .build()
+    }
 }
 
 fn main() {

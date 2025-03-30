@@ -3,38 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload File</title>
+    <title>View Files</title>
     <style>
         body {
             font-family: Arial, sans-serif;
             text-align: center;
             margin: 50px;
         }
-        form {
-            margin-top: 20px;
+        ul {
+            list-style: none;
+            padding: 0;
         }
-        input, button {
-            padding: 10px;
-            font-size: 16px;
+        li {
+            margin: 10px 0;
         }
         a {
-            display: inline-block;
-            margin-top: 20px;
             text-decoration: none;
             color: #007BFF;
+            font-size: 18px;
         }
         a:hover {
             text-decoration: underline;
         }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
-<h2>Upload a File</h2>
-<form action="/upload" method="post" enctype="multipart/form-data">
-    <input type="file" name="file" required>
-    <button type="submit">Upload</button>
-</form>
+<h2>Uploaded Files</h2>
+<ul>
+    {{FILES_LIST}}
+</ul>
 <br>
-<a href="files">View Uploaded Files</a>
+<a href="../upload" class="back-link">Upload More Files</a>
 </body>
 </html>
