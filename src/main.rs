@@ -1,4 +1,4 @@
-mod file_manager;
+mod common;
 mod handlers;
 mod http;
 
@@ -114,7 +114,7 @@ struct Server {
 
 impl Server {
     /// Creates a new `Server`
-    /// 
+    ///
     /// Arguments:
     /// - **server_address**: The host and port the server will run on
     /// - **number_of_workers**: The number of threads that the server will have
@@ -133,7 +133,7 @@ impl Server {
     /// Arguments:
     /// - **stream**: a mutable TcpStream that represents a single HTTP request
     ///
-    /// This method reads the stream using a BufReader and uses that to construct a new `Request`, the 
+    /// This method reads the stream using a BufReader and uses that to construct a new `Request`, the
     /// `Request`'s `method` and `path` determine what handler gets invoked. The handler returns a `Response`,
     /// which is then cast into a byte buffer that gets written to the stream, ending the HTTP request.
     fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
@@ -152,21 +152,13 @@ impl Server {
 
         let response = response.unwrap_or_else(|response| response);
 
-        let (response_headers, response_body) = match response.to_http_response() {
-            Ok((response_headers, response_body)) => (response_headers, response_body),
-            Err(error) => error
-                .to_http_response()
-                .expect("Failed to convert response to http headers"),
-        };
+        let response_bytes = response.to_bytes().unwrap_or_else(|error| error
+            .to_bytes()
+            .expect("Failed to convert response to http headers"));
 
         stream
-            .write_all(&response_headers)
+            .write_all(&response_bytes)
             .map_err(|e| format!("Error writing response to stream: {}", e))?;
-        if let Some(body) = response_body {
-            stream
-                .write_all(&body)
-                .map_err(|e| format!("Error writing file to stream: {}", e))?;
-        }
 
         stream
             .flush()

@@ -1,4 +1,4 @@
-use crate::file_manager::UploadedFile;
+use crate::common::BufferedFile;
 use crate::handlers::ErrorHandler;
 use std::collections::HashMap;
 use std::fmt;
@@ -9,12 +9,13 @@ use std::net::TcpStream;
 mod helpers {
     use std::path::Path;
 
+    /// Gets the HTTP content type based on the extension of a file
     pub(crate) fn get_content_type(file_path: &str) -> &str {
         match Path::new(file_path)
             .extension()
             .and_then(|ext| ext.to_str())
         {
-            Some("html") => "text/html; charset=UTF-8", // ✅ Ensure HTML is rendered
+            Some("html") => "text/html; charset=UTF-8",
             Some("css") => "text/css",
             Some("js") => "application/javascript",
             Some("png") => "image/png",
@@ -28,6 +29,7 @@ mod helpers {
     }
 }
 
+/// Represents all HTTP methods
 #[derive(PartialEq, Debug)]
 pub(crate) enum HttpMethod {
     Get,
@@ -44,6 +46,7 @@ pub(crate) enum HttpMethod {
 impl TryFrom<String> for HttpMethod {
     type Error = String;
 
+    /// Tries to get an HTTP method from a string
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let method = match value.to_uppercase().as_str() {
             "GET" => HttpMethod::Get,
@@ -64,7 +67,7 @@ impl TryFrom<String> for HttpMethod {
 }
 
 impl Display for HttpMethod {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             HttpMethod::Get => write!(f, "GET"),
             HttpMethod::Post => write!(f, "POST"),
@@ -79,7 +82,7 @@ impl Display for HttpMethod {
     }
 }
 
-/// A Request is an abstraction of an HTTP Request and its contents
+/// A `Request` is an abstraction of an HTTP Request and its contents
 pub(crate) struct Request {
     pub(crate) path: String,
     pub(crate) method: HttpMethod,
@@ -88,8 +91,9 @@ pub(crate) struct Request {
     pub(crate) body: RequestBody,
 }
 
+/// A `RequestBody` is an abstraction of an HTTP request body
 pub(crate) enum RequestBody {
-    Multipart(UploadedFile),
+    Multipart(BufferedFile),
     Empty,
 }
 
@@ -102,6 +106,7 @@ impl Display for RequestBody {
     }
 }
 
+/// A `ResponseBody` is an abstraction of an HTTP response body
 #[derive(Debug)]
 pub(crate) enum ResponseBody {
     File(String),
@@ -113,11 +118,11 @@ impl Request {
     /// Tries to create a new HTTP request
     ///
     /// Arguments:
-    /// - **buf_reader**: a `BufReader` of a `TcpStream`
+    /// - **buf_reader**: a `BufReader` of a `TcpStream` containing the current HTTP request
     ///
-    /// The `BufReader` is iterated into lines, the first line being the request line, the next couple
-    /// being the headers, and then a possible body. If any of the extractions of the lines fail, an
-    /// error is returned.
+    /// The `BufReader`'s first line is read into a string, and the request line is extracted from that.
+    /// It is then used to extract the headers from the next couple of lines.
+    /// And finally, used to extract the request body.
     pub(crate) fn try_new(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Request, String> {
         let mut line = String::new();
 
@@ -162,19 +167,14 @@ impl Request {
         Ok((method, path, http_version))
     }
 
-    // TODO: Update this
-    /// Extracts headers from HTTP request lines.
+    /// Extracts headers from a `TcpStream`
     ///
     /// Arguments:
-    /// - **lines**: a bunch of `Lines` from a `BufReader` of a `TcpStream`, typically all lines in a
-    /// HTTP request besides the first.
+    /// - **buf_reader**: A mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
     ///
-    /// HTTP request lines are looped through, and each line is split on the first colon from the left,
-    /// for example "Host: localhost" would be split into ["Host", " localhost"], the first is the
-    /// key and the second is the value of the header, stored in a `HashMap`.  
-    /// If the current line is an empty line, that signifies that there are no more headers, and the
-    /// loop is broken.  
-    /// An error is returned if reading or splitting the current line fails.
+    /// Starts a loop of reading a line from the `BufReader` to a string, and then splitting the string
+    /// on a colon to get the key and value of each header. The loop breaks when we reach an empty line,
+    /// marking the end of the headers in the HTTP request.
     fn extract_headers(
         buf_reader: &mut BufReader<&mut TcpStream>,
     ) -> Result<HashMap<String, String>, String> {
@@ -202,6 +202,15 @@ impl Request {
         Ok(headers)
     }
 
+    /// Extracts a body from a `TcpStream`
+    ///
+    /// Arguments:
+    /// - **buf_reader**: A mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
+    /// - **headers**: A reference to a `HashMap` containing HTTP request headers.
+    ///
+    /// Gets the content length and content type headers to know how to read the body.
+    /// If the content length is 0 or either is not set, the request has no body.
+    /// Otherwise, the content type is matched against and determines the extractor to call.
     fn extract_body(
         buf_reader: &mut BufReader<&mut TcpStream>,
         headers: &HashMap<String, String>,
@@ -228,7 +237,7 @@ impl Request {
 
         match content_type_header {
             content_type if content_type.starts_with("multipart/form-data") => {
-                MultiPartForm::extract(buf_reader, content_type, content_length_header)
+                MultiPartFormExtractor::extract(buf_reader, content_type, content_length_header)
                     .map(|uploaded_file| RequestBody::Multipart(uploaded_file))
             }
             _ => Err("Unsupported content type".to_string()),
@@ -236,8 +245,18 @@ impl Request {
     }
 }
 
+/// This represents a contract that all body extractors should fulfill
 trait BodyExtractor {
     type Body;
+
+    /// Extracts a body from a TCP stream
+    ///
+    /// Arguments:
+    /// - **buf_reader**: A mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
+    /// - **content_type**: The content type of the body to determine how to read it
+    /// - **content_length**: The length of the body, to determine how much to read from the stream
+    ///
+    /// This method must be implemented by any struct that implements this trait
     fn extract(
         buf_reader: &mut BufReader<&mut TcpStream>,
         content_type: String,
@@ -245,16 +264,18 @@ trait BodyExtractor {
     ) -> Result<Self::Body, String>;
 }
 
-struct MultiPartForm;
+/// A type that helps extract a body from a multipart/form
+struct MultiPartFormExtractor;
 
-impl BodyExtractor for MultiPartForm {
-    type Body = UploadedFile;
+impl BodyExtractor for MultiPartFormExtractor {
+    type Body = BufferedFile;
 
+    //TODO: add docs here
     fn extract(
         buf_reader: &mut BufReader<&mut TcpStream>,
         content_type: String,
         _: usize,
-    ) -> Result<UploadedFile, String> {
+    ) -> Result<BufferedFile, String> {
         let (_, boundary) = content_type
             .split_once("boundary=")
             .ok_or("boundary missing in Content-Type header".to_string())?;
@@ -309,7 +330,7 @@ impl BodyExtractor for MultiPartForm {
             .as_bytes()
             .to_vec();
 
-        Ok(UploadedFile {
+        Ok(BufferedFile {
             name: filename,
             content: data,
         })
@@ -331,6 +352,7 @@ impl Display for Request {
     }
 }
 
+/// A `HttpStatus` is an abstraction of an HTTP status code and a reason phrase
 #[derive(Debug)]
 pub(crate) enum HttpStatus {
     Ok,
@@ -341,6 +363,7 @@ pub(crate) enum HttpStatus {
 }
 
 impl HttpStatus {
+    /// Gets the status code used in an HTTP response from a `HttpStatus`
     fn get_status_code(&self) -> u16 {
         match self {
             HttpStatus::Ok => 200,
@@ -351,6 +374,7 @@ impl HttpStatus {
         }
     }
 
+    /// Gets the reason phrase used in an HTTP response from a `HttpStatus`
     fn get_reason_phrase(&self) -> String {
         match self {
             HttpStatus::Ok => "OK".to_string(),
@@ -362,6 +386,7 @@ impl HttpStatus {
     }
 }
 
+/// Contains constants for HTTP headers
 pub(crate) struct HttpHeader;
 
 impl HttpHeader {
@@ -371,6 +396,7 @@ impl HttpHeader {
     pub(crate) const LOCATION: &'static str = "Location";
 }
 
+/// Holds data to create a `Response` using the builder pattern
 #[derive(Default)]
 pub(crate) struct ResponseBuilder {
     status: Option<HttpStatus>,
@@ -379,24 +405,44 @@ pub(crate) struct ResponseBuilder {
 }
 
 impl ResponseBuilder {
+    /// Creates a new `ResponseBuilder` using the default values of each field
     fn new() -> Self {
         ResponseBuilder::default()
     }
 
+    /// Updates the status of the `ResponseBuilder`
+    ///
+    /// Arguments:
+    /// - **mut self**: A mutable capture of self
+    /// - **status**: A `HttpStatus`
     pub(crate) fn status(mut self, status: HttpStatus) -> Self {
         self.status = Some(status);
         self
     }
 
+    /// Updates the headers of the `ResponseBuilder`
+    ///
+    /// Arguments:
+    /// - **mut self**: A mutable capture of self
+    /// - **name**: The name of a single header to update
+    /// - **value**: The value of the header being added
     pub(crate) fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.insert(name.to_string(), value.to_string());
         self
     }
+
+    /// Updates the body of the `ResponseBuilder`
+    ///
+    /// Arguments:
+    /// - **mut self**: A mutable capture of self
+    /// - **body**: The `ResponseBody` to update the `ResponseBuilder` with
     pub(crate) fn body(mut self, body: ResponseBody) -> Self {
         self.body = Some(body);
         self
     }
 
+    /// Builds a `Response` from a `ResponseBuilder`
+    /// Sets useful defaults for status and body if not present, and passes the headers alongside
     pub(crate) fn build(self) -> Response {
         let status = self.status.unwrap_or(HttpStatus::Ok);
         let body = self.body.unwrap_or(ResponseBody::Empty);
@@ -405,6 +451,7 @@ impl ResponseBuilder {
     }
 }
 
+/// A `Response` is an abstraction of an HTTP response and its contents
 #[derive(Debug)]
 pub(crate) struct Response {
     http_version: String,
@@ -414,10 +461,17 @@ pub(crate) struct Response {
 }
 
 impl Response {
+    /// Returns a `ResponseBuilder` to build a `Response` easily
     pub(crate) fn builder() -> ResponseBuilder {
         ResponseBuilder::new()
     }
 
+    /// Creates a new `Response`
+    ///
+    /// Arguments:
+    /// - **status**: The `HttpStatus` of the `Response`
+    /// - **headers**: A `HashMap` of all HTTP headers of the `Response`
+    /// - **body**: the body of the `Response`
     fn new(status: HttpStatus, headers: HashMap<String, String>, body: ResponseBody) -> Self {
         Response {
             http_version: "HTTP/1.1".to_string(),
@@ -427,20 +481,27 @@ impl Response {
         }
     }
 
-    pub(crate) fn to_http_response(mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), Response> {
-        //TODO: remove all unwraps
-        let mut headers_buffer = Vec::new();
+    /// Tries to cast a `Response` into bytes that get written to the TCP stream as a response
+    /// 
+    /// Writes each field of the `Response` to a byte buffer.  
+    /// First the status line is written, then an attempt is made to get an `Option<BufferedFile>` for 
+    /// cases where the response has or doesn't have a body.  
+    /// Content-Type and Content-Length headers are overridden, depending on whether there is 
+    /// a body and how long it is.  
+    /// The headers are written next, then an empty line, then the response body, if any.
+    pub(crate) fn to_bytes(mut self) -> Result<Vec<u8>, Response> {
+        let mut buffer = Vec::new();
 
         let status_code = self.status.get_status_code();
         let reason_phrase = self.status.get_reason_phrase();
         write!(
-            headers_buffer,
+            buffer,
             "{} {} {}\r\n",
             self.http_version, status_code, reason_phrase
         )
-        .unwrap();
+            .map_err(|_| ErrorHandler::handle_server_error())?;
 
-        let file: Option<UploadedFile> = self.body.try_into().map_err(|e| {
+        let file: Option<BufferedFile> = self.body.try_into().map_err(|e| {
             println!("Failed to convert body to uploaded file: {:?}", e);
             ErrorHandler::handle_invalid_file_request()
         })?;
@@ -475,11 +536,15 @@ impl Response {
         };
 
         for (key, value) in &self.headers {
-            write!(headers_buffer, "{}: {}\r\n", key, value).unwrap();
+            write!(buffer, "{}: {}\r\n", key, value).map_err(|_| ErrorHandler::handle_server_error())?;
         }
-        write!(headers_buffer, "\r\n").unwrap();
+        write!(buffer, "\r\n").map_err(|_| ErrorHandler::handle_server_error())?;
 
-        Ok((headers_buffer, body_buffer))
+        if let Some(mut body) = body_buffer {
+            buffer.append(&mut body)
+        }
+
+        Ok(buffer)
     }
 }
 
