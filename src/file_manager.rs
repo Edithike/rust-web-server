@@ -17,15 +17,34 @@ pub(crate) fn save_file(dir: &str, uploaded_file: UploadedFile) -> std::io::Resu
 pub(crate) fn list_files_with_paths(dir: &str) -> std::io::Result<Vec<(String, String)>> {
     let mut files = Vec::new();
 
+    traverse_dir(Path::new(dir), &mut files, "".to_string())?;
+
+    Ok(files)
+}
+
+fn traverse_dir(dir: &Path, files: &mut Vec<(String, String)>, relative_path: String) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         let file_name = entry.file_name().into_string().unwrap_or_default();
-        let full_path = path.to_string_lossy().into_owned();
-        files.push((file_name, full_path));
-    }
 
-    Ok(files)
+        // Construct the relative file path
+        let full_path = path.to_string_lossy().into_owned();
+        let relative_file_path = if relative_path.is_empty() {
+            file_name.clone()
+        } else {
+            format!("{}/{}", relative_path, file_name)
+        };
+
+        if path.is_dir() {
+            // Recursively process subdirectories
+            traverse_dir(&path, files, relative_file_path)?;
+        } else {
+            // Add file to list
+            files.push((relative_file_path, full_path));
+        }
+    }
+    Ok(())
 }
 
 impl TryFrom<ResponseBody> for Option<UploadedFile> {
