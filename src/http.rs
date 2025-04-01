@@ -1,8 +1,8 @@
 use crate::common::{AppError, BufferedFile};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 
@@ -124,7 +124,7 @@ impl Request {
     /// Arguments:
     /// - **request_line**: a `String` which is typically the first line of an HTTP request
     ///
-    /// The `request_line` is split on whitespace, the first three parts parsed accordingly and 
+    /// The `request_line` is split on whitespace, the first three parts parsed accordingly and
     /// returned as a tuple of 3 if all parsings succeed. Otherwise, an error is returned
     fn extract_request_line(
         request_line: String,
@@ -175,7 +175,9 @@ impl Request {
             let Some((key, value)) = line.split_once(":") else {
                 return Err(AppError::Invalid("Error parsing headers".to_string()));
             };
-            headers.insert(key.trim().to_string(), value.trim().to_string());
+            // Transform the case of the header to ensure we always store them in header case
+            let key = Self::to_header_case(key.trim());
+            headers.insert(key, value.trim().to_string());
         }
         Ok(headers)
     }
@@ -193,7 +195,6 @@ impl Request {
         buf_reader: &mut BufReader<&mut TcpStream>,
         headers: &HashMap<String, String>,
     ) -> Result<RequestBody, AppError> {
-        // TODO: make headers work with any case
         let content_length = headers
             .get(HttpHeader::CONTENT_LENGTH)
             .map(|value| value.parse::<usize>())
@@ -223,14 +224,24 @@ impl Request {
                 MultiPartFormExtractor::extract(buf_reader, content_type, content_length_header)
                     .map(|uploaded_file| RequestBody::Multipart(uploaded_file))
             }
-            _ => Err(AppError::Invalid(format!("Unsupported content type: {content_type_header}"))),
+            _ => Err(AppError::Invalid(format!(
+                "Unsupported content type: {content_type_header}"
+            ))),
         }
     }
 
-    // fn to_header_case(header: String) -> String {
-    //     if HttpHeader::KNOWN_HEADERS
-    //     header.split("-").map(|s| ).collect::<Vec<String>>().join("-")
-    // }
+    fn to_header_case(s: &str) -> String {
+        s.split('-')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("-")
+    }
 }
 
 /// This represents a contract that all body extractors should fulfill
@@ -257,8 +268,20 @@ struct MultiPartFormExtractor;
 
 impl BodyExtractor for MultiPartFormExtractor {
     type Body = BufferedFile;
-
-    //TODO: add docs here
+    
+    /// Extracts a body from a multipart form request
+    ///
+    /// Arguments:
+    /// - **buf_reader**: A mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
+    /// - **content_type**: *Content-Type* header value
+    /// - **content_length**: *Content-Length* header value
+    ///
+    /// The boundary is gotten from the *Content-Type* header value, and then the `TcpStream` is read
+    /// into a byte buffer of the size determined by the *Content-Length* header, which is the exact
+    /// size of the body.  
+    /// The body is then stripped of the boundaries and split on newlines, extracting the first 3 
+    /// parts; the content disposition which contains the file name, the content type and the file.  
+    /// The file name and file data are parsed and used to construct a `BufferedFile` which gets returned.
     fn extract(
         buf_reader: &mut BufReader<&mut TcpStream>,
         content_type: String,
@@ -266,32 +289,25 @@ impl BodyExtractor for MultiPartFormExtractor {
     ) -> Result<Self::Body, AppError> {
         let (_, boundary) = content_type
             .split_once("boundary=")
-            .ok_or(AppError::Invalid("Boundary missing in Content-Type header".to_string()))?;
+            .ok_or(AppError::Invalid(
+                "Boundary missing in Content-Type header".to_string(),
+            ))?;
         let boundary = boundary.trim();
 
-        let mut form_body = String::new();
-        loop {
-            let mut line = String::new();
-            let bytes_read = buf_reader
-                .read_line(&mut line)
-                .map_err(|_| AppError::Invalid("Failed to read form data".to_string()))?;
-
-            if bytes_read == 0 {
-                break; // Stop at EOF
-            }
-
-            form_body.push_str(&line);
-
-            if line.trim() == format!("--{boundary}--") {
-                break; // Stop at the ending boundary
-            }
-        }
+        let mut form_body_buffer = vec![0; content_length];
+        buf_reader
+            .read_exact(&mut form_body_buffer)
+            .map_err(|_| AppError::Invalid("Failed to read form data".to_string()))?;
+        let form_body = String::from_utf8(form_body_buffer)
+            .map_err(|_| AppError::Invalid("Failed to parse form data".to_string()))?;
 
         let form_body = form_body
             .trim()
             .strip_prefix(format!("--{boundary}").as_str())
             .and_then(|body| body.strip_suffix(format!("--{boundary}--").as_str()))
-            .ok_or(AppError::Invalid("Form body not surrounded with boundary".to_string()))?
+            .ok_or(AppError::Invalid(
+                "Form body not surrounded with boundary".to_string(),
+            ))?
             .trim()
             .to_string();
 
@@ -307,12 +323,14 @@ impl BodyExtractor for MultiPartFormExtractor {
             })
             .ok_or(AppError::Invalid("Invalid content disposition".to_string()))?
             .to_string();
-        parts
-            .next()
-            .ok_or(AppError::Invalid("Content type missing from form body".to_string()))?;
+        parts.next().ok_or(AppError::Invalid(
+            "Content type missing from form body".to_string(),
+        ))?;
         let data = parts
             .next()
-            .ok_or(AppError::Invalid("file data missing from form body".to_string()))?
+            .ok_or(AppError::Invalid(
+                "file data missing from form body".to_string(),
+            ))?
             .to_string()
             .trim()
             .as_bytes()
@@ -382,15 +400,6 @@ impl HttpHeader {
     pub(crate) const CONTENT_TYPE: &'static str = "Content-Type";
     pub(crate) const CONTENT_DISPOSITION: &'static str = "Content-Disposition";
     pub(crate) const LOCATION: &'static str = "Location";
-
-    fn get_known_headers() -> HashSet<&'static str> {
-        HashSet::from_iter(vec![
-            Self::CONTENT_LENGTH,
-            Self::CONTENT_TYPE,
-            Self::CONTENT_DISPOSITION,
-            Self::LOCATION,
-        ])
-    }
 }
 
 /// Holds data to create a `Response` using the builder pattern
@@ -586,11 +595,11 @@ impl Display for Response {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Request};
+    use crate::Request;
+    use crate::http::HttpMethod;
     use std::io::{BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
-    use crate::http::HttpMethod;
 
     #[test]
     fn try_new_request() {
