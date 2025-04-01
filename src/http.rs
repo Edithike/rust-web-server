@@ -266,6 +266,11 @@ trait BodyExtractor {
 /// A type that helps extract a body from a multipart/form
 struct MultiPartFormExtractor;
 
+impl MultiPartFormExtractor {
+    /// Limits the file size possible to upload to 50MB, to avoid very large files
+    const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
+}
+
 impl BodyExtractor for MultiPartFormExtractor {
     type Body = BufferedFile;
     
@@ -276,6 +281,8 @@ impl BodyExtractor for MultiPartFormExtractor {
     /// - **content_type**: *Content-Type* header value
     /// - **content_length**: *Content-Length* header value
     ///
+    /// The *Content-Type* header is checked to determine if the file is larger the allowed size, if
+    /// so, an error is returned.  
     /// The boundary is gotten from the *Content-Type* header value, and then the `TcpStream` is read
     /// into a byte buffer of the size determined by the *Content-Length* header, which is the exact
     /// size of the body.  
@@ -287,6 +294,10 @@ impl BodyExtractor for MultiPartFormExtractor {
         content_type: String,
         content_length: usize,
     ) -> Result<Self::Body, AppError> {
+        if content_length > Self::MAX_FILE_SIZE {
+            return Err(AppError::Invalid("File size exceeds 50MB limit".to_string()));
+        }
+        
         let (_, boundary) = content_type
             .split_once("boundary=")
             .ok_or(AppError::Invalid(
