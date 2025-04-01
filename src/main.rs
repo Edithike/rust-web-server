@@ -68,7 +68,7 @@ impl ThreadPool {
     ///
     /// This method creates a channel and holds onto the sender, passing the receiver to each new
     /// `Worker` created.
-    /// An Arc<Mutex> is used so that the channel can be passed between threads and so that only
+    /// An `Arc<Mutex>` is used so that the channel can be passed between threads and so that only
     /// one worker has access to the mutex of the receiver at a time
     fn new(size: usize) -> ThreadPool {
         assert!(size > 0);

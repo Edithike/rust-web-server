@@ -56,3 +56,11 @@ Or if built with `--release`
 
 The app should be running locally and can be accessed on
 [localhost:7878](http://localhost:7878)
+
+### 6. Documentation
+
+The documentation for this Rust crate can be viewed with this command
+```shell
+cargo doc --open
+```
+This will open up the documentation in your browser.
