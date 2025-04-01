@@ -1,33 +1,10 @@
-use crate::common::BufferedFile;
-use crate::handlers::ErrorHandler;
-use std::collections::HashMap;
+use crate::common::{AppError, BufferedFile};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-
-mod helpers {
-    use std::path::Path;
-
-    /// Gets the HTTP content type based on the extension of a file
-    pub(crate) fn get_content_type(file_path: &str) -> &str {
-        match Path::new(file_path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-        {
-            Some("html") => "text/html; charset=UTF-8",
-            Some("css") => "text/css",
-            Some("js") => "application/javascript",
-            Some("png") => "image/png",
-            Some("jpg") | Some("jpeg") => "image/jpeg",
-            Some("gif") => "image/gif",
-            Some("pdf") => "application/pdf",
-            Some("json") => "application/json",
-            Some("txt") => "text/plain",
-            _ => "application/octet-stream",
-        }
-    }
-}
+use std::path::Path;
 
 /// Represents all HTTP methods
 #[derive(PartialEq, Debug)]
@@ -44,7 +21,7 @@ pub(crate) enum HttpMethod {
 }
 
 impl TryFrom<String> for HttpMethod {
-    type Error = String;
+    type Error = AppError;
 
     /// Tries to get an HTTP method from a string
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -59,7 +36,7 @@ impl TryFrom<String> for HttpMethod {
             "TRACE" => HttpMethod::Trace,
             "CONNECT" => HttpMethod::Connect,
             _ => {
-                return Err(format!("Unknown method: {}", value));
+                return Err(AppError::Invalid(format!("Unknown method: {}", value)));
             }
         };
         Ok(method)
@@ -123,12 +100,12 @@ impl Request {
     /// The `BufReader`'s first line is read into a string, and the request line is extracted from that.
     /// It is then used to extract the headers from the next couple of lines.
     /// And finally, used to extract the request body.
-    pub(crate) fn try_new(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Request, String> {
+    pub(crate) fn try_new(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Request, AppError> {
         let mut line = String::new();
 
         buf_reader
             .read_line(&mut line)
-            .map_err(|_| "Error reading request".to_string())?;
+            .map_err(|_| AppError::IO("Error reading request".to_string()))?;
         let (method, path, http_version) = Self::extract_request_line(line)?;
         let headers = Self::extract_headers(&mut buf_reader)?;
         let body = Self::extract_body(&mut buf_reader, &headers)?;
@@ -147,21 +124,25 @@ impl Request {
     /// Arguments:
     /// - **request_line**: a `String` which is typically the first line of an HTTP request
     ///
-    /// The `request_line` is split into at most three parts based on whitespace, and each part is
-    /// parsed and extracted, returning a tuple of three. If any of the parsings fail, an error is
-    /// returned.
-    fn extract_request_line(request_line: String) -> Result<(HttpMethod, String, String), String> {
-        let mut parts = request_line.splitn(3, " ");
+    /// The `request_line` is split on whitespace, the first three parts parsed accordingly and 
+    /// returned as a tuple of 3 if all parsings succeed. Otherwise, an error is returned
+    fn extract_request_line(
+        request_line: String,
+    ) -> Result<(HttpMethod, String, String), AppError> {
+        let mut parts = request_line.split_whitespace();
 
         let method: HttpMethod = parts
             .next()
-            .ok_or("Could not find method")?
+            .ok_or(AppError::Invalid("Could not find method".to_string()))?
             .to_string()
             .try_into()?;
-        let path = parts.next().ok_or("Could not find path")?.to_string();
+        let path = parts
+            .next()
+            .ok_or(AppError::Invalid("Could not find path".to_string()))?
+            .to_string();
         let http_version = parts
             .next()
-            .ok_or("Could not find http_version")?
+            .ok_or(AppError::Invalid("Could not find http_version".to_string()))?
             .to_string();
 
         Ok((method, path, http_version))
@@ -177,14 +158,14 @@ impl Request {
     /// marking the end of the headers in the HTTP request.
     fn extract_headers(
         buf_reader: &mut BufReader<&mut TcpStream>,
-    ) -> Result<HashMap<String, String>, String> {
+    ) -> Result<HashMap<String, String>, AppError> {
         let mut headers = HashMap::new();
 
         loop {
             let mut line = String::new();
             buf_reader
                 .read_line(&mut line)
-                .map_err(|e| format!("Error reading headers: {}", e))?;
+                .map_err(|e| AppError::Invalid(format!("Error reading headers: {}", e)))?;
 
             if line == "\r\n" {
                 // End of headers
@@ -192,10 +173,7 @@ impl Request {
             }
 
             let Some((key, value)) = line.split_once(":") else {
-                let error_msg = "Error parsing headers".to_string();
-
-                eprintln!("{}", error_msg);
-                return Err(error_msg);
+                return Err(AppError::Invalid("Error parsing headers".to_string()));
             };
             headers.insert(key.trim().to_string(), value.trim().to_string());
         }
@@ -214,13 +192,18 @@ impl Request {
     fn extract_body(
         buf_reader: &mut BufReader<&mut TcpStream>,
         headers: &HashMap<String, String>,
-    ) -> Result<RequestBody, String> {
+    ) -> Result<RequestBody, AppError> {
         // TODO: make headers work with any case
         let content_length = headers
             .get(HttpHeader::CONTENT_LENGTH)
             .map(|value| value.parse::<usize>())
             .transpose()
-            .map_err(|_| "Content-Length was not a number".to_string())?;
+            .map_err(|_| {
+                AppError::Invalid(format!(
+                    "{} request header is not a number",
+                    HttpHeader::CONTENT_LENGTH
+                ))
+            })?;
         let content_type_header = headers
             .get(HttpHeader::CONTENT_TYPE)
             .and_then(|content_type| Some(content_type.to_string()));
@@ -240,9 +223,14 @@ impl Request {
                 MultiPartFormExtractor::extract(buf_reader, content_type, content_length_header)
                     .map(|uploaded_file| RequestBody::Multipart(uploaded_file))
             }
-            _ => Err("Unsupported content type".to_string()),
+            _ => Err(AppError::Invalid(format!("Unsupported content type: {content_type_header}"))),
         }
     }
+
+    // fn to_header_case(header: String) -> String {
+    //     if HttpHeader::KNOWN_HEADERS
+    //     header.split("-").map(|s| ).collect::<Vec<String>>().join("-")
+    // }
 }
 
 /// This represents a contract that all body extractors should fulfill
@@ -261,7 +249,7 @@ trait BodyExtractor {
         buf_reader: &mut BufReader<&mut TcpStream>,
         content_type: String,
         content_length: usize,
-    ) -> Result<Self::Body, String>;
+    ) -> Result<Self::Body, AppError>;
 }
 
 /// A type that helps extract a body from a multipart/form
@@ -274,11 +262,11 @@ impl BodyExtractor for MultiPartFormExtractor {
     fn extract(
         buf_reader: &mut BufReader<&mut TcpStream>,
         content_type: String,
-        _: usize,
-    ) -> Result<BufferedFile, String> {
+        content_length: usize,
+    ) -> Result<Self::Body, AppError> {
         let (_, boundary) = content_type
             .split_once("boundary=")
-            .ok_or("boundary missing in Content-Type header".to_string())?;
+            .ok_or(AppError::Invalid("Boundary missing in Content-Type header".to_string()))?;
         let boundary = boundary.trim();
 
         let mut form_body = String::new();
@@ -286,7 +274,7 @@ impl BodyExtractor for MultiPartFormExtractor {
             let mut line = String::new();
             let bytes_read = buf_reader
                 .read_line(&mut line)
-                .map_err(|_| "Failed to read form data")?;
+                .map_err(|_| AppError::Invalid("Failed to read form data".to_string()))?;
 
             if bytes_read == 0 {
                 break; // Stop at EOF
@@ -303,7 +291,7 @@ impl BodyExtractor for MultiPartFormExtractor {
             .trim()
             .strip_prefix(format!("--{boundary}").as_str())
             .and_then(|body| body.strip_suffix(format!("--{boundary}--").as_str()))
-            .ok_or("Form body not surrounded with boundary".to_string())?
+            .ok_or(AppError::Invalid("Form body not surrounded with boundary".to_string()))?
             .trim()
             .to_string();
 
@@ -317,14 +305,14 @@ impl BodyExtractor for MultiPartFormExtractor {
 
                 Some(filename)
             })
-            .ok_or("Invalid content disposition".to_string())?
+            .ok_or(AppError::Invalid("Invalid content disposition".to_string()))?
             .to_string();
         parts
             .next()
-            .ok_or("Content type missing from form body".to_string())?;
+            .ok_or(AppError::Invalid("Content type missing from form body".to_string()))?;
         let data = parts
             .next()
-            .ok_or("file data missing from form body".to_string())?
+            .ok_or(AppError::Invalid("file data missing from form body".to_string()))?
             .to_string()
             .trim()
             .as_bytes()
@@ -394,6 +382,15 @@ impl HttpHeader {
     pub(crate) const CONTENT_TYPE: &'static str = "Content-Type";
     pub(crate) const CONTENT_DISPOSITION: &'static str = "Content-Disposition";
     pub(crate) const LOCATION: &'static str = "Location";
+
+    fn get_known_headers() -> HashSet<&'static str> {
+        HashSet::from_iter(vec![
+            Self::CONTENT_LENGTH,
+            Self::CONTENT_TYPE,
+            Self::CONTENT_DISPOSITION,
+            Self::LOCATION,
+        ])
+    }
 }
 
 /// Holds data to create a `Response` using the builder pattern
@@ -482,14 +479,14 @@ impl Response {
     }
 
     /// Tries to cast a `Response` into bytes that get written to the TCP stream as a response
-    /// 
+    ///
     /// Writes each field of the `Response` to a byte buffer.  
-    /// First the status line is written, then an attempt is made to get an `Option<BufferedFile>` for 
+    /// First the status line is written, then an attempt is made to get an `Option<BufferedFile>` for
     /// cases where the response has or doesn't have a body.  
-    /// Content-Type and Content-Length headers are overridden, depending on whether there is 
+    /// Content-Type and Content-Length headers are overridden, depending on whether there is
     /// a body and how long it is.  
     /// The headers are written next, then an empty line, then the response body, if any.
-    pub(crate) fn to_bytes(mut self) -> Result<Vec<u8>, Response> {
+    pub(crate) fn to_bytes(mut self) -> Result<Vec<u8>, AppError> {
         let mut buffer = Vec::new();
 
         let status_code = self.status.get_status_code();
@@ -499,16 +496,13 @@ impl Response {
             "{} {} {}\r\n",
             self.http_version, status_code, reason_phrase
         )
-            .map_err(|_| ErrorHandler::handle_server_error())?;
+        .map_err(|_| AppError::IO("Error writing HTTP response to buffer".to_string()))?;
 
-        let file: Option<BufferedFile> = self.body.try_into().map_err(|e| {
-            println!("Failed to convert body to uploaded file: {:?}", e);
-            ErrorHandler::handle_invalid_file_request()
-        })?;
+        let file: Option<BufferedFile> = self.body.try_into()?;
 
         let body_buffer = match file {
             Some(file) => {
-                let content_type = helpers::get_content_type(&file.name);
+                let content_type = Self::get_content_type(&file.name);
 
                 self.headers.insert(
                     HttpHeader::CONTENT_LENGTH.to_string(),
@@ -536,15 +530,36 @@ impl Response {
         };
 
         for (key, value) in &self.headers {
-            write!(buffer, "{}: {}\r\n", key, value).map_err(|_| ErrorHandler::handle_server_error())?;
+            write!(buffer, "{}: {}\r\n", key, value)
+                .map_err(|_| AppError::IO("Error writing HTTP response to buffer".to_string()))?;
         }
-        write!(buffer, "\r\n").map_err(|_| ErrorHandler::handle_server_error())?;
+        write!(buffer, "\r\n")
+            .map_err(|_| AppError::IO("Error writing HTTP response to buffer".to_string()))?;
 
         if let Some(mut body) = body_buffer {
             buffer.append(&mut body)
         }
 
         Ok(buffer)
+    }
+
+    /// Gets the HTTP content type based on the extension of a file
+    pub(crate) fn get_content_type(file_path: &str) -> &str {
+        match Path::new(file_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+        {
+            Some("html") => "text/html; charset=UTF-8",
+            Some("css") => "text/css",
+            Some("js") => "application/javascript",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("pdf") => "application/pdf",
+            Some("json") => "application/json",
+            Some("txt") => "text/plain",
+            _ => "application/octet-stream",
+        }
     }
 }
 
@@ -571,10 +586,11 @@ impl Display for Response {
 
 #[cfg(test)]
 mod tests {
-    use crate::{HttpMethod, Request};
+    use crate::{Request};
     use std::io::{BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
+    use crate::http::HttpMethod;
 
     #[test]
     fn try_new_request() {

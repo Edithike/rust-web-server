@@ -2,11 +2,12 @@ mod common;
 mod handlers;
 mod http;
 
-use crate::handlers::{ErrorHandler, RequestHandler};
-use crate::http::{HttpMethod, Request, Response};
+use crate::common::{get_current_military_time, AppError};
+use crate::handlers::{ErrorHandler, Router};
+use crate::http::{Request, Response};
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
@@ -40,7 +41,7 @@ impl Worker {
                 match job() {
                     Ok(()) => {}
                     Err(e) => {
-                        eprintln!("{}", e);
+                        warn!("{}", e);
                     }
                 }
             }
@@ -138,23 +139,28 @@ impl Server {
     /// which is then cast into a byte buffer that gets written to the stream, ending the HTTP request.
     fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
         let buf_reader = BufReader::new(&mut stream);
-        let request = Request::try_new(buf_reader)?;
 
-        let response: Result<Response, Response> = match (request.method, request.path.as_str()) {
-            (HttpMethod::Get, "/") => RequestHandler::list_files(),
-            (HttpMethod::Get, file_path) if file_path.starts_with("/uploads") => {
-                RequestHandler::view_file(file_path.to_string())
-            }
-            (HttpMethod::Get, "/upload") => RequestHandler::view_to_upload_files(),
-            (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
-            _ => Err(ErrorHandler::handle_invalid_page_request()),
+        let map_error_to_response_bytes = |error| {
+            let error_response = ErrorHandler::map_error_to_handler(error);
+
+            error_response
+                .to_bytes()
+                .expect("Failed to convert response to http headers")
         };
 
-        let response = response.unwrap_or_else(|response| response);
-
-        let response_bytes = response.to_bytes().unwrap_or_else(|error| error
-            .to_bytes()
-            .expect("Failed to convert response to http headers"));
+        let response_bytes = match Request::try_new(buf_reader) {
+            Ok(request) => {
+                log!("{} {}", request.method, request.path);
+                let response: Result<Response, AppError> = Router::route_request(request);
+                match response {
+                    Ok(response) => response
+                        .to_bytes()
+                        .unwrap_or_else(map_error_to_response_bytes),
+                    Err(e) => map_error_to_response_bytes(e),
+                }
+            }
+            Err(app_error) => map_error_to_response_bytes(app_error),
+        };
 
         stream
             .write_all(&response_bytes)
@@ -174,11 +180,13 @@ fn main() {
         let stream = match stream {
             Ok(stream) => stream,
             Err(e) => {
-                eprintln!("Encountered error getting stream {}", e);
+                log_error!("Encountered error getting stream {}", e);
                 continue;
             }
         };
 
-        server.thread_pool.execute(move || Server::handle_connection(stream));
+        server
+            .thread_pool
+            .execute(move || Server::handle_connection(stream));
     }
 }
