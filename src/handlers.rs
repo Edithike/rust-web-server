@@ -4,9 +4,21 @@ use crate::http::{
 };
 use crate::warn;
 use crate::{get_current_military_time, log_error};
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// This stores the HTML templates as strings in the binary during compile time, reducing the 
+/// dependency on a templates folder's existence
+struct Templates;
+
+impl Templates {
+    const ACCESS_DENIED: &'static str = include_str!("../templates/access-denied.html");
+    const BAD_REQUEST: &'static str = include_str!("../templates/bad-request.html");
+    const FILE_NOT_FOUND: &'static str = include_str!("../templates/file-not-found.html");
+    const INDEX: &'static str = include_str!("../templates/index.html");
+    const PAGE_NOT_FOUND: &'static str = include_str!("../templates/page-not-found.html");
+    const SERVER_ERROR: &'static str = include_str!("../templates/server-error.html");
+    const UPLOAD : &'static str = include_str!("../templates/upload.html");
+}
 
 /// Contains all logic to handle each valid request
 pub(crate) struct RequestHandler;
@@ -19,12 +31,7 @@ impl RequestHandler {
     /// each file path as the `href`, and the filename as the display. This string is interpolated into
     /// the template file, and the resulting string returned in the response.
     pub(crate) fn list_files() -> Result<Response, AppError> {
-        let mut html_file = File::open("templates/index.html")
-            .map_err(|_| AppError::IO("Failed open index.html template".to_string()))?;
-        let mut template = String::new();
-        html_file
-            .read_to_string(&mut template)
-            .map_err(|_| AppError::IO("Failed read index.html template".to_string()))?;
+        let template = Templates::INDEX;
 
         let files = FileManager::list_files_with_paths("uploads")?;
 
@@ -92,9 +99,9 @@ impl RequestHandler {
     }
 
     /// Returns the view of the template to upload a new file
-    pub(crate) fn view_to_upload_files() -> Result<Response, AppError> {
+    pub(crate) fn get_file_upload_view() -> Result<Response, AppError> {
         Ok(Response::builder()
-            .body(ResponseBody::File("templates/upload.html".to_string()))
+            .body(ResponseBody::Text(Templates::UPLOAD.to_string()))
             .build())
     }
 
@@ -232,7 +239,7 @@ impl Router {
             (HttpMethod::Get, file_path) if file_path.starts_with("/uploads") => {
                 RequestHandler::view_file(file_path.to_string())
             }
-            (HttpMethod::Get, "/upload") => RequestHandler::view_to_upload_files(),
+            (HttpMethod::Get, "/upload") => RequestHandler::get_file_upload_view(),
             (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
             _ => Ok(ErrorHandler::handle_invalid_page_request(
                 request.method,
@@ -252,9 +259,7 @@ impl ErrorHandler {
         warn!("Invalid page request: {} {}", http_method, path);
         Response::builder()
             .status(HttpStatus::NotFound)
-            .body(ResponseBody::File(
-                "templates/page-not-found.html".to_string(),
-            ))
+            .body(ResponseBody::Text(Templates::PAGE_NOT_FOUND.to_string()))
             .build()
     }
 
@@ -263,7 +268,7 @@ impl ErrorHandler {
     pub(crate) fn handle_bad_request() -> Response {
         Response::builder()
             .status(HttpStatus::NotFound)
-            .body(ResponseBody::File("templates/bad-request.html".to_string()))
+            .body(ResponseBody::Text(Templates::BAD_REQUEST.to_string()))
             .build()
     }
 
@@ -272,9 +277,7 @@ impl ErrorHandler {
     pub(crate) fn handle_access_denied() -> Response {
         Response::builder()
             .status(HttpStatus::Forbidden)
-            .body(ResponseBody::File(
-                "templates/access-denied.html".to_string(),
-            ))
+            .body(ResponseBody::Text(Templates::ACCESS_DENIED.to_string()))
             .build()
     }
 
@@ -283,9 +286,7 @@ impl ErrorHandler {
     pub(crate) fn handle_invalid_file_request() -> Response {
         Response::builder()
             .status(HttpStatus::NotFound)
-            .body(ResponseBody::File(
-                "templates/file-not-found.html".to_string(),
-            ))
+            .body(ResponseBody::Text(Templates::FILE_NOT_FOUND.to_string()))
             .build()
     }
 
@@ -294,9 +295,7 @@ impl ErrorHandler {
     pub(crate) fn handle_server_error() -> Response {
         Response::builder()
             .status(HttpStatus::ServerError)
-            .body(ResponseBody::File(
-                "templates/server-error.html".to_string(),
-            ))
+            .body(ResponseBody::Text(Templates::SERVER_ERROR.to_string()))
             .build()
     }
 
