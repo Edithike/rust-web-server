@@ -6,6 +6,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, fs};
 
+/// Logs info to the standard output, adding the current date and time, and using colors to 
+/// indicate it is an info log
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
@@ -19,6 +21,8 @@ macro_rules! log {
     };
 }
 
+/// Logs a warning to the standard error output, adding the current date and time, using colors
+/// to indicate it's a warning log
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {
@@ -32,6 +36,8 @@ macro_rules! warn {
     };
 }
 
+/// Logs an error to the standard error output, adding the current date and time, using colors 
+/// to indicate that it is an error and might be critical
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
@@ -45,6 +51,17 @@ macro_rules! log_error {
     };
 }
 
+/// The error type of the application, representing all known variants of errors that might occur
+/// during the lifetime of the application
+/// - **IO**: This represents errors that have to do with reading or writing to files or streams, they
+/// are critical and typically mean something is wrong with the application or configuration
+/// - **Invalid**: This represents errors from a malformed request or invalid body, they are usually 
+/// not critical
+/// - **NotFound**: This represents errors that come from the client requesting a file or page that
+/// can't be found on the server
+/// - **NotPermitted**: This represents errors that emanate from the client attempting to access a
+/// resource outside the permission, usually a file outside the uploads directory.
+/// - **Unknown**: This represents all errors of unknown reason or origin.
 #[derive(Debug)]
 pub(crate) enum AppError {
     IO(String),
@@ -54,16 +71,25 @@ pub(crate) enum AppError {
     Unknown(String),
 }
 
+/// Checks if a year is a leap year using the Gregorian calendar's definition of a leap year.  
+/// A year is a leap year if it is divisible by 4 but not by 100, or it is divisible by 400
 fn is_leap_year(year: u16) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
+/// Gets the current timestamp by taking the current `SystemTime` and finding the duration from the
+/// UNIX epoch till now, and then parsing that into seconds
 fn get_current_timestamp() -> u64 {
     let now = SystemTime::now();
     let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
     since_epoch.as_secs()
 }
 
+/// Gets the current date and time in military time (YYYY-MM-DDThh:mm:ss).  
+/// The current timestamp is gotten, and then divided by the number of seconds in a day to derive
+/// how many days have passed since the UNIX epoch. The number of days is then used to figure out
+/// how many years have passed since the then.  
+/// The remainder of the division is used to find the time of the current day
 pub(crate) fn get_current_military_time() -> String {
     let timestamp = get_current_timestamp();
     let seconds_per_minute = 60u32;
@@ -74,6 +100,8 @@ pub(crate) fn get_current_military_time() -> String {
     let mut current_year = 1970u16;
     let seconds_in_current_day: u32 = (timestamp % seconds_per_day as u64) as u32;
 
+    // Continuously subtracts the number days of each year from the total days since the UNIX epoch, 
+    // until the days left can't make up a year
     while days_since_epoch >= if is_leap_year(current_year) { 366 } else { 365 } {
         current_year += 1;
         days_since_epoch -= if is_leap_year(current_year) { 366 } else { 365 }
@@ -95,6 +123,8 @@ pub(crate) fn get_current_military_time() -> String {
     ];
 
     let mut current_month = 1;
+    // Repeatedly subtracts the number of days of each month from the days left, until the subtraction
+    // amounts in a negative number
     for days in days_in_months {
         days_since_epoch = match days_since_epoch.checked_sub(days as u64) {
             Some(d) => d,

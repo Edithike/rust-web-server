@@ -135,8 +135,11 @@ impl Server {
     /// - **stream**: a mutable TcpStream that represents a single HTTP request
     ///
     /// This method reads the stream using a BufReader and uses that to construct a new `Request`, the
-    /// `Request`'s `method` and `path` determine what handler gets invoked. The handler returns a `Response`,
-    /// which is then cast into a byte buffer that gets written to the stream, ending the HTTP request.
+    /// `Request`'s gets passed to `Router` which handles routing and returns a `Response`.  
+    /// The `Response` is converted to bytes and any errors are passed to the `ErrorHandler` which
+    /// handles them and produces an appropriate response and logs errors.  
+    /// The response bytes are then written to the `TcpStream`, ending the request. The `TcpStream`
+    /// is then flushed, to ensure the connection is closed, in the case of unexpected behavior.
     fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
         let buf_reader = BufReader::new(&mut stream);
 

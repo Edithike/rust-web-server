@@ -104,7 +104,8 @@ impl RequestHandler {
     /// - **request_body**: The `RequestBody` to be used to get the file from
     ///
     /// The `RequestBody` must be of the `Multipart` variant or an error is returned.  
-    /// The file path is then validated to assert that it meets all requirements.  
+    /// The file path is then validated to assert that it meets all requirements.
+    /// The file path is again resolved to assert that it is inside the 'uploads' directory.    
     /// If all conditions pass, the file gets saved and a response with an empty body gets returned.
     pub(crate) fn upload_file(request_body: RequestBody) -> Result<Response, AppError> {
         // Ensure that the `RequestBody` is a `Multipart` type, as that is the only supported type
@@ -119,7 +120,9 @@ impl RequestHandler {
         };
         
         Self::validate_filename(&uploaded_file.name)?;
-        let resolved_path = Self::resolve_traversals(&uploaded_file.name);
+        
+        let path = Path::new("uploads").join(&uploaded_file.name);
+        let resolved_path = Self::resolve_traversals(&path);
         if !resolved_path.starts_with("uploads/") {
             return Err(AppError::NotPermitted("Client attempted to access a path outside the uploads directory".to_string()));
         }
@@ -191,7 +194,7 @@ impl RequestHandler {
     /// This resolves all traversals in a file path and returns the actual file path. This undoes
     /// all traversals in a path and can save from a possible traversal attack where the client
     /// uses traversals to access files outside the allowed uploads directory
-    fn resolve_traversals(path: &str) -> PathBuf {
+    fn resolve_traversals(path: &PathBuf) -> PathBuf {
         let mut normalized = PathBuf::new();
 
         for component in Path::new(path).components() {
@@ -212,9 +215,17 @@ impl RequestHandler {
     }
 }
 
+/// Abstracts routing from a request method and path to a handler
 pub(crate) struct Router;
 
 impl Router {
+    /// Routes a request to its appropriate handler
+    /// 
+    /// Arguments:
+    /// - **request**: A `Request` to route to a possible handler
+    /// 
+    /// The method and path are matched against, and if a supported handler exists, it is called and 
+    /// the response is returned
     pub(crate) fn route_request(request: Request) -> Result<Response, AppError> {
         match (&request.method, request.path.as_str()) {
             (HttpMethod::Get, "/") => RequestHandler::list_files(),
@@ -289,6 +300,14 @@ impl ErrorHandler {
             .build()
     }
 
+    /// Maps an `AppError` to a handler
+    /// 
+    /// Arguments:
+    /// - **app_error**: The `AppError` to be to a handler
+    /// 
+    /// The given `AppError` is matched against, and routed to an appropriate error handler after the
+    /// error is logged.  
+    /// All errors propagate to this function and so it is the best and only place that logs errors.
     pub(crate) fn map_error_to_handler(app_error: AppError) -> Response {
         match app_error {
             AppError::Invalid(error) => {
