@@ -273,7 +273,7 @@ impl MultiPartFormExtractor {
 
 impl BodyExtractor for MultiPartFormExtractor {
     type Body = BufferedFile;
-    
+
     /// Extracts a body from a multipart form request
     ///
     /// Arguments:
@@ -286,7 +286,7 @@ impl BodyExtractor for MultiPartFormExtractor {
     /// The boundary is gotten from the *Content-Type* header value, and then the `TcpStream` is read
     /// into a byte buffer of the size determined by the *Content-Length* header, which is the exact
     /// size of the body.  
-    /// The body is then stripped of the boundaries and split on newlines, extracting the first 3 
+    /// The body is then stripped of the boundaries and split on newlines, extracting the first 3
     /// parts; the content disposition which contains the file name, the content type and the file.  
     /// The file name and file data are parsed and used to construct a `BufferedFile` which gets returned.
     fn extract(
@@ -295,9 +295,11 @@ impl BodyExtractor for MultiPartFormExtractor {
         content_length: usize,
     ) -> Result<Self::Body, AppError> {
         if content_length > Self::MAX_FILE_SIZE {
-            return Err(AppError::Invalid("File size exceeds 50MB limit".to_string()));
+            return Err(AppError::Invalid(
+                "File size exceeds 50MB limit".to_string(),
+            ));
         }
-        
+
         let (_, boundary) = content_type
             .split_once("boundary=")
             .ok_or(AppError::Invalid(

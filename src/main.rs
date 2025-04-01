@@ -2,13 +2,14 @@ mod common;
 mod handlers;
 mod http;
 
-use crate::common::{get_current_military_time, AppError};
+use crate::common::{AppError, Time};
 use crate::handlers::{ErrorHandler, Router};
 use crate::http::{Request, Response};
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use std::path::Path;
+use std::sync::{Arc, Mutex, mpsc};
+use std::{fs, thread};
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
 type Job = Box<dyn FnOnce() -> Result<(), String> + Send + 'static>;
@@ -176,8 +177,23 @@ impl Server {
     }
 }
 
+/// This ensures that the uploads directory always exists.  
+/// A `Path` is created with the uploads directory path, and if it does not exist, it is created
+/// before the server starts listening.  
+/// 
+/// This is required for the binary to be self-sufficient.
+fn ensure_uploads_dir() {
+    let uploads_path = Path::new("uploads");
+    if !uploads_path.exists() {
+        log!("Uploads directory does not exist, and is being created");
+        fs::create_dir(uploads_path).expect("Failed to create uploads directory");
+    }
+}
+
 fn main() {
     let server = Server::new("localhost:7878", 4);
+    log!("Server started and running on port 7878");
+    ensure_uploads_dir();
 
     for stream in server.listener.incoming() {
         let stream = match stream {

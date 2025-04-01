@@ -6,17 +6,18 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, fs};
 
-/// Logs info to the standard output, adding the current date and time, and using colors to 
+/// Logs info to the standard output, adding the current date and time, and using colors to
 /// indicate it is an info log
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
         {
-            // Get the current time in military time
-            let military_time = get_current_military_time();
+            // Get the current date and time in military time
+            let timestamp = Time::get_current_timestamp();
+            let date_string = Time::get_date_string_from_timestamp(timestamp);
 
             // Print the log message
-            println!("\x1b[32mINFO [{}]\x1b[0m {}", military_time, format!($($arg)*));
+            println!("\x1b[32mINFO [{}]\x1b[0m {}", date_string, format!($($arg)*));
         }
     };
 }
@@ -27,26 +28,28 @@ macro_rules! log {
 macro_rules! warn {
     ($($arg:tt)*) => {
         {
-            // Get the current time in military time
-            let military_time = get_current_military_time();
+            // Get the current date and time in military time
+            let timestamp = Time::get_current_timestamp();
+            let date_string = Time::get_date_string_from_timestamp(timestamp);
 
             // Print the log message
-            eprintln!("\x1b[33mWARNING [{}]\x1b[0m {}", military_time, format!($($arg)*));
+            eprintln!("\x1b[33mWARNING [{}]\x1b[0m {}", date_string, format!($($arg)*));
         }
     };
 }
 
-/// Logs an error to the standard error output, adding the current date and time, using colors 
+/// Logs an error to the standard error output, adding the current date and time, using colors
 /// to indicate that it is an error and might be critical
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {
         {
-            // Get the current time in military time
-            let military_time = get_current_military_time();
+            // Get the current date and time in military time
+            let timestamp = Time::get_current_timestamp();
+            let date_string = Time::get_date_string_from_timestamp(timestamp);
 
             // Print the log message
-            eprintln!("\x1b[31mWARNING [{}]\x1b[0m {}", military_time, format!($($arg)*));
+            eprintln!("\x1b[31mWARNING [{}]\x1b[0m {}", date_string, format!($($arg)*));
         }
     };
 }
@@ -55,7 +58,7 @@ macro_rules! log_error {
 /// during the lifetime of the application
 /// - **IO**: This represents errors that have to do with reading or writing to files or streams, they
 /// are critical and typically mean something is wrong with the application or configuration
-/// - **Invalid**: This represents errors from a malformed request or invalid body, they are usually 
+/// - **Invalid**: This represents errors from a malformed request or invalid body, they are usually
 /// not critical
 /// - **NotFound**: This represents errors that come from the client requesting a file or page that
 /// can't be found on the server
@@ -71,73 +74,96 @@ pub(crate) enum AppError {
     Unknown(String),
 }
 
-/// Checks if a year is a leap year using the Gregorian calendar's definition of a leap year.  
-/// A year is a leap year if it is divisible by 4 but not by 100, or it is divisible by 400
-fn is_leap_year(year: u16) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
+pub(crate) struct Time;
 
-/// Gets the current timestamp by taking the current `SystemTime` and finding the duration from the
-/// UNIX epoch till now, and then parsing that into seconds
-fn get_current_timestamp() -> u64 {
-    let now = SystemTime::now();
-    let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
-    since_epoch.as_secs()
-}
-
-/// Gets the current date and time in military time (YYYY-MM-DDThh:mm:ss).  
-/// The current timestamp is gotten, and then divided by the number of seconds in a day to derive
-/// how many days have passed since the UNIX epoch. The number of days is then used to figure out
-/// how many years have passed since the then.  
-/// The remainder of the division is used to find the time of the current day
-pub(crate) fn get_current_military_time() -> String {
-    let timestamp = get_current_timestamp();
-    let seconds_per_minute = 60u32;
-    let seconds_per_hour = 3_600u32;
-    let seconds_per_day = 86_400u32;
-
-    let mut days_since_epoch = timestamp / seconds_per_day as u64;
-    let mut current_year = 1970u16;
-    let seconds_in_current_day: u32 = (timestamp % seconds_per_day as u64) as u32;
-
-    // Continuously subtracts the number days of each year from the total days since the UNIX epoch, 
-    // until the days left can't make up a year
-    while days_since_epoch >= if is_leap_year(current_year) { 366 } else { 365 } {
-        current_year += 1;
-        days_since_epoch -= if is_leap_year(current_year) { 366 } else { 365 }
+impl Time {
+    /// Checks if a year is a leap year using the Gregorian calendar's definition of a leap year.
+    /// A year is a leap year if it is divisible by 4 but not by 100, or it is divisible by 400
+    fn is_leap_year(year: u16) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
     }
 
-    let days_in_months: [u8; 12] = [
-        31,
-        if is_leap_year(current_year) { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-
-    let mut current_month = 1;
-    // Repeatedly subtracts the number of days of each month from the days left, until the subtraction
-    // amounts in a negative number
-    for days in days_in_months {
-        days_since_epoch = match days_since_epoch.checked_sub(days as u64) {
-            Some(d) => d,
-            None => break,
-        };
-        current_month += 1;
+    /// Gets the current timestamp by taking the current `SystemTime` and finding the duration from the
+    /// UNIX epoch till now, and then parsing that into seconds
+    pub(crate) fn get_current_timestamp() -> u64 {
+        let now = SystemTime::now();
+        let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
+        since_epoch.as_secs()
     }
-    let current_day: u8 = days_since_epoch as u8 + 1;
-    let hour = seconds_in_current_day / seconds_per_hour;
-    let minute = (seconds_in_current_day % seconds_per_hour) / seconds_per_minute;
-    let seconds = (seconds_in_current_day % seconds_per_minute) % seconds_per_minute;
 
-    format!("{current_year}-{current_month:02}-{current_day:02}T{hour:02}:{minute:02}:{seconds:02}")
+    /// Converts a timestamp to a date string in military time (YYYY-MM-DDThh:mm:ss).
+    ///
+    /// Arguments:
+    /// - **timestamp**: The timestamp to be transformed to military time
+    ///
+    /// The timestamp is divided by the number of seconds in a day to derive how many days have
+    /// passed since the UNIX epoch. The number of days is then used to figure out how many years 
+    /// have passed since the then.  
+    /// The remainder of the division is used to find the time of the current day
+    pub(crate) fn get_date_string_from_timestamp(timestamp: u64) -> String {
+        let seconds_per_minute = 60u32;
+        let seconds_per_hour = 3_600u32;
+        let seconds_per_day = 86_400u32;
+
+        let mut days_since_epoch = timestamp / seconds_per_day as u64;
+        let mut current_year = 1970u16;
+        let seconds_in_current_day: u32 = (timestamp % seconds_per_day as u64) as u32;
+
+        // Continuously subtracts the number days of each year from the total days since the UNIX epoch,
+        // until the days left can't make up a year
+        while days_since_epoch
+            >= if Self::is_leap_year(current_year) {
+                366
+            } else {
+                365
+            }
+        {
+            current_year += 1;
+            days_since_epoch -= if Self::is_leap_year(current_year) {
+                366
+            } else {
+                365
+            }
+        }
+
+        let days_in_months: [u8; 12] = [
+            31,
+            if Self::is_leap_year(current_year) {
+                29
+            } else {
+                28
+            },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
+
+        let mut current_month = 1;
+        // Repeatedly subtracts the number of days of each month from the days left, until the subtraction
+        // amounts in a negative number
+        for days in days_in_months {
+            days_since_epoch = match days_since_epoch.checked_sub(days as u64) {
+                Some(d) => d,
+                None => break,
+            };
+            current_month += 1;
+        }
+        let current_day: u8 = days_since_epoch as u8 + 1;
+        let hour = seconds_in_current_day / seconds_per_hour;
+        let minute = (seconds_in_current_day % seconds_per_hour) / seconds_per_minute;
+        let seconds = (seconds_in_current_day % seconds_per_minute) % seconds_per_minute;
+
+        format!(
+            "{current_year}-{current_month:02}-{current_day:02}T{hour:02}:{minute:02}:{seconds:02}"
+        )
+    }
 }
 
 /// Handles all file reading and writing logic besides the basics
@@ -324,12 +350,13 @@ impl TryFrom<&Path> for BufferedFile {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::get_current_military_time;
+    use crate::common::Time;
 
     #[test]
-    fn test_get_military_time() {
-        let military_time = get_current_military_time();
+    fn test_get_date_string_from_timestamp() {
+        let timestamp = Time::get_current_timestamp();
+        let date_string = Time::get_date_string_from_timestamp(timestamp);
 
-        println!("military time: {}", military_time);
+        println!("date string: {}", date_string);
     }
 }

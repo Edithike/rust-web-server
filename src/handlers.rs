@@ -3,10 +3,10 @@ use crate::http::{
     HttpHeader, HttpMethod, HttpStatus, Request, RequestBody, Response, ResponseBody,
 };
 use crate::warn;
-use crate::{get_current_military_time, log_error};
+use crate::{Time, log_error};
 use std::path::{Path, PathBuf};
 
-/// This stores the HTML templates as strings in the binary during compile time, reducing the 
+/// This stores the HTML templates as strings in the binary during compile time, reducing the
 /// dependency on a templates folder's existence
 struct Templates;
 
@@ -17,7 +17,7 @@ impl Templates {
     const INDEX: &'static str = include_str!("../templates/index.html");
     const PAGE_NOT_FOUND: &'static str = include_str!("../templates/page-not-found.html");
     const SERVER_ERROR: &'static str = include_str!("../templates/server-error.html");
-    const UPLOAD : &'static str = include_str!("../templates/upload.html");
+    const UPLOAD: &'static str = include_str!("../templates/upload.html");
 }
 
 /// Contains all logic to handle each valid request
@@ -54,7 +54,7 @@ impl RequestHandler {
     /// - **filename**: The name of the file to be viewed, can possibly include a directory
     ///
     /// "/uploads/" is trimmed from the start of the file name, and then the file path is validated
-    /// to assert that it meets all requirements, then the file name is joined with the uploads 
+    /// to assert that it meets all requirements, then the file name is joined with the uploads
     /// directory and an assert is done to ensure the file is inside the directory, to protect against
     /// possible traversal attacks.  
     /// If the validation or canonicalization fails, an error is returned.
@@ -67,7 +67,7 @@ impl RequestHandler {
 
         let base_path = Path::new("uploads");
         let requested_path = base_path.join(filename);
-        
+
         // Get the absolute path, removing all traversals, this protects from traversal attacks
         match requested_path.canonicalize() {
             Ok(resolved_path) => {
@@ -89,12 +89,10 @@ impl RequestHandler {
                     )))
                 }
             }
-            Err(_) => {
-                Err(AppError::NotFound(format!(
-                    "Client attempted to access a file that does not exist: {}",
-                    requested_path.display()
-                )))
-            }
+            Err(_) => Err(AppError::NotFound(format!(
+                "Client attempted to access a file that does not exist: {}",
+                requested_path.display()
+            ))),
         }
     }
 
@@ -125,13 +123,15 @@ impl RequestHandler {
                 )));
             }
         };
-        
+
         Self::validate_filename(&uploaded_file.name)?;
-        
+
         let path = Path::new("uploads").join(&uploaded_file.name);
         let resolved_path = Self::resolve_traversals(&path);
         if !resolved_path.starts_with("uploads/") {
-            return Err(AppError::NotPermitted("Client attempted to access a path outside the uploads directory".to_string()));
+            return Err(AppError::NotPermitted(
+                "Client attempted to access a path outside the uploads directory".to_string(),
+            ));
         }
 
         FileManager::save_file("uploads", uploaded_file)?;
@@ -194,10 +194,10 @@ impl RequestHandler {
     }
 
     /// Resolves the traversal of a file path
-    /// 
-    /// Arguments: 
+    ///
+    /// Arguments:
     /// - **path**: The path to resolve
-    /// 
+    ///
     /// This resolves all traversals in a file path and returns the actual file path. This undoes
     /// all traversals in a path and can save from a possible traversal attack where the client
     /// uses traversals to access files outside the allowed uploads directory
@@ -227,11 +227,11 @@ pub(crate) struct Router;
 
 impl Router {
     /// Routes a request to its appropriate handler
-    /// 
+    ///
     /// Arguments:
     /// - **request**: A `Request` to route to a possible handler
-    /// 
-    /// The method and path are matched against, and if a supported handler exists, it is called and 
+    ///
+    /// The method and path are matched against, and if a supported handler exists, it is called and
     /// the response is returned
     pub(crate) fn route_request(request: Request) -> Result<Response, AppError> {
         match (&request.method, request.path.as_str()) {
@@ -300,10 +300,10 @@ impl ErrorHandler {
     }
 
     /// Maps an `AppError` to a handler
-    /// 
+    ///
     /// Arguments:
     /// - **app_error**: The `AppError` to be to a handler
-    /// 
+    ///
     /// The given `AppError` is matched against, and routed to an appropriate error handler after the
     /// error is logged.  
     /// All errors propagate to this function and so it is the best and only place that logs errors.
