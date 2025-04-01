@@ -176,7 +176,7 @@ impl Request {
                 return Err(AppError::Invalid("Error parsing headers".to_string()));
             };
             // Transform the case of the header to ensure we always store them in header case
-            let key = Self::to_header_case(key.trim());
+            let key = Self::transform_to_header_case(key.trim());
             headers.insert(key, value.trim().to_string());
         }
         Ok(headers)
@@ -230,7 +230,7 @@ impl Request {
         }
     }
 
-    fn to_header_case(s: &str) -> String {
+    fn transform_to_header_case(s: &str) -> String {
         s.split('-')
             .map(|word| {
                 let mut chars = word.chars();
