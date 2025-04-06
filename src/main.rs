@@ -8,7 +8,7 @@ use crate::http::{Request, Response};
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc, LazyLock};
 use std::{fs, thread};
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
@@ -141,7 +141,7 @@ impl Server {
     /// handles them and produces an appropriate response and logs errors.  
     /// The response bytes are then written to the `TcpStream`, ending the request. The `TcpStream`
     /// is then flushed, to ensure the connection is closed, in the case of unexpected behavior.
-    fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
+    fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> Result<(), String> {
         let buf_reader = BufReader::new(&mut stream);
 
         let map_error_to_response_bytes = |error| {
@@ -155,7 +155,7 @@ impl Server {
         let response_bytes = match Request::try_new(buf_reader) {
             Ok(request) => {
                 log!("{} {}", request.method, request.path);
-                let response: Result<Response, AppError> = Router::route_request(request);
+                let response: Result<Response, AppError> = Router::route_request(request, state);
                 match response {
                     Ok(response) => response
                         .to_bytes()
@@ -190,10 +190,21 @@ fn ensure_uploads_dir() {
     }
 }
 
+struct AppState {
+    file_lock: Arc<Mutex<()>>,
+}
+
+static LOCKS: LazyLock<AppState> = LazyLock::new(|| {
+    AppState{
+        file_lock: Arc::new(Mutex::new(())),
+    }
+});
+
 fn main() {
     let server = Server::new("localhost:7878", 4);
     log!("Server started and running on port 7878");
     ensure_uploads_dir();
+    let app_state = Arc::new(AppState{file_lock: Arc::new(Mutex::new(()))});
 
     for stream in server.listener.incoming() {
         let stream = match stream {
@@ -203,9 +214,9 @@ fn main() {
                 continue;
             }
         };
-
+        let state = app_state.clone();
         server
             .thread_pool
-            .execute(move || Server::handle_connection(stream));
+            .execute(move || Server::handle_connection(stream, state));
     }
 }

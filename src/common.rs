@@ -3,8 +3,9 @@ use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::{fmt, fs};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fmt, fs, thread};
+use std::sync::{Arc, Mutex};
 
 /// Logs info to the standard output, adding the current date and time, and using colors to
 /// indicate it is an info log
@@ -179,7 +180,11 @@ impl FileManager {
     /// A `Path` is made out of the directory, and then joined with the file name to create the file path.  
     /// A `File` is then created in that `Path`, and the contents of the `BufferedFile` are written into it.  
     /// This will override any previous file saved in the same path with the same name.
-    pub(crate) fn save_file(dir: &str, buffered_file: BufferedFile) -> Result<(), AppError> {
+    pub(crate) fn save_file(dir: &str, buffered_file: BufferedFile, file_lock: Arc<Mutex<()>>) -> Result<(), AppError> {
+        let _mutex_guard = file_lock.lock().unwrap();
+        println!("Started sleeping");
+        thread::sleep(Duration::new(10, 0));
+        println!("Sleeping ended");
         let path = Path::new(dir).join(buffered_file.name);
 
         let mut file = File::create(&path) // Create or overwrite the file

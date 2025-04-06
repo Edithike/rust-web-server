@@ -2,9 +2,10 @@ use crate::common::{AppError, FileManager};
 use crate::http::{
     HttpHeader, HttpMethod, HttpStatus, Request, RequestBody, Response, ResponseBody,
 };
-use crate::warn;
+use crate::{warn, AppState};
 use crate::{Time, log_error};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// This stores the HTML templates as strings in the binary during compile time, reducing the
 /// dependency on a templates folder's existence
@@ -112,7 +113,7 @@ impl RequestHandler {
     /// The file path is then validated to assert that it meets all requirements.
     /// The file path is again resolved to assert that it is inside the 'uploads' directory.    
     /// If all conditions pass, the file gets saved and a response with an empty body gets returned.
-    pub(crate) fn upload_file(request_body: RequestBody) -> Result<Response, AppError> {
+    pub(crate) fn upload_file(request_body: RequestBody, state: Arc<AppState>) -> Result<Response, AppError> {
         // Ensure that the `RequestBody` is a `Multipart` type, as that is the only supported type
         // for file uploads on this server
         let uploaded_file = match request_body {
@@ -134,7 +135,7 @@ impl RequestHandler {
             ));
         }
 
-        FileManager::save_file("uploads", uploaded_file)?;
+        FileManager::save_file("uploads", uploaded_file, state.file_lock.clone())?;
 
         Ok(Response::builder()
             .status(HttpStatus::SeeOther)
@@ -233,14 +234,14 @@ impl Router {
     ///
     /// The method and path are matched against, and if a supported handler exists, it is called and
     /// the response is returned
-    pub(crate) fn route_request(request: Request) -> Result<Response, AppError> {
+    pub(crate) fn route_request(request: Request, state: Arc<AppState>) -> Result<Response, AppError> {
         match (&request.method, request.path.as_str()) {
             (HttpMethod::Get, "/") => RequestHandler::list_files(),
             (HttpMethod::Get, file_path) if file_path.starts_with("/uploads") => {
                 RequestHandler::view_file(file_path.to_string())
             }
             (HttpMethod::Get, "/upload") => RequestHandler::get_file_upload_view(),
-            (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
+            (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body, state),
             _ => Ok(ErrorHandler::handle_invalid_page_request(
                 request.method,
                 request.path,
