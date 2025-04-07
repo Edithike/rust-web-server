@@ -1,11 +1,11 @@
 use crate::http::ResponseBody;
+use crate::LOCKS;
 use std::fmt::{Display, Formatter};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fmt, fs, thread};
-use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fmt, fs};
 
 /// Logs info to the standard output, adding the current date and time, and using colors to
 /// indicate it is an info log
@@ -16,9 +16,12 @@ macro_rules! log {
             // Get the current date and time in military time
             let timestamp = Time::get_current_timestamp();
             let date_string = Time::get_date_string_from_timestamp(timestamp);
-
+            let log_message = format!($($arg)*);
+            
+            // Write to log file
+            FileManager::append_to_log_file(format!("[INFO] {}: {}", date_string, log_message));
             // Print the log message
-            println!("\x1b[32mINFO [{}]\x1b[0m {}", date_string, format!($($arg)*));
+            println!("\x1b[32mINFO [{}]\x1b[0m {}", date_string, log_message);
         }
     };
 }
@@ -32,9 +35,12 @@ macro_rules! warn {
             // Get the current date and time in military time
             let timestamp = Time::get_current_timestamp();
             let date_string = Time::get_date_string_from_timestamp(timestamp);
-
+            let log_message = format!($($arg)*);
+            
+            // Write to log file
+            FileManager::append_to_log_file(format!("[WARN] {}: {}", date_string, log_message));
             // Print the log message
-            eprintln!("\x1b[33mWARNING [{}]\x1b[0m {}", date_string, format!($($arg)*));
+            eprintln!("\x1b[33mWARNING [{}]\x1b[0m {}", date_string, log_message);
         }
     };
 }
@@ -48,9 +54,12 @@ macro_rules! log_error {
             // Get the current date and time in military time
             let timestamp = Time::get_current_timestamp();
             let date_string = Time::get_date_string_from_timestamp(timestamp);
+            let log_message = format!($($arg)*);
 
+            // Write to log file
+            FileManager::append_to_log_file(format!("[ERROR] {}: {}", date_string, log_message));
             // Print the log message
-            eprintln!("\x1b[31mWARNING [{}]\x1b[0m {}", date_string, format!($($arg)*));
+            eprintln!("\x1b[31mERROR [{}]\x1b[0m {}", date_string, log_message);
         }
     };
 }
@@ -98,7 +107,7 @@ impl Time {
     /// - **timestamp**: The timestamp to be transformed to military time
     ///
     /// The timestamp is divided by the number of seconds in a day to derive how many days have
-    /// passed since the UNIX epoch. The number of days is then used to figure out how many years 
+    /// passed since the UNIX epoch. The number of days is then used to figure out how many years
     /// have passed since the then.  
     /// The remainder of the division is used to find the time of the current day
     pub(crate) fn get_date_string_from_timestamp(timestamp: u64) -> String {
@@ -180,11 +189,8 @@ impl FileManager {
     /// A `Path` is made out of the directory, and then joined with the file name to create the file path.  
     /// A `File` is then created in that `Path`, and the contents of the `BufferedFile` are written into it.  
     /// This will override any previous file saved in the same path with the same name.
-    pub(crate) fn save_file(dir: &str, buffered_file: BufferedFile, file_lock: Arc<Mutex<()>>) -> Result<(), AppError> {
-        let _mutex_guard = file_lock.lock().unwrap();
-        println!("Started sleeping");
-        thread::sleep(Duration::new(10, 0));
-        println!("Sleeping ended");
+    pub(crate) fn save_file(dir: &str, buffered_file: BufferedFile) -> Result<(), AppError> {
+        let _mutex_guard = LOCKS.create_file.lock().unwrap();
         let path = Path::new(dir).join(buffered_file.name);
 
         let mut file = File::create(&path) // Create or overwrite the file
@@ -254,6 +260,21 @@ impl FileManager {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn append_to_log_file(line: String) {
+        let _mutex_guard = LOCKS.append_log.lock().unwrap();
+        
+        let mut line = line;
+        line.push_str("\n");
+        
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("logs.txt")
+            .expect("Failed to open logs.txt file");
+        file.write_all(line.as_bytes())
+            .expect("Failed to write to logs.txt file");
     }
 }
 
