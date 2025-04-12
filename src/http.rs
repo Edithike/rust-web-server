@@ -4,10 +4,65 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::ops::Deref;
 use std::path::Path;
 
 /// Limits the file size possible to upload to 50MB, to avoid very large files
 const MAX_REQUEST_BODY_SIZE: usize = 50 * 1024 * 1024;
+
+/// Represents a URL path
+#[derive(Debug, PartialEq)]
+pub(crate) struct Url(String);
+
+impl Url {
+    /// Creates a new Url that is URL decoded
+    ///
+    /// Arguments:
+    /// - **raw_url_path**: The raw string that is the URL path
+    ///
+    /// The raw path is split into a `Chars` list, and iterated over, with each special URL character
+    /// decoded, and an error being returned if decoding is not possible.
+    fn try_new(raw_url_path: &str) -> Result<Url, AppError> {
+        let mut output = String::new();
+        let mut chars = raw_url_path.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            match c {
+                '%' => {
+                    let hex1 = chars
+                        .next()
+                        .ok_or(AppError::Invalid("Incomplete percent-encoding".to_string()))?;
+                    let hex2 = chars
+                        .next()
+                        .ok_or(AppError::Invalid("Incomplete percent-encoding".to_string()))?;
+                    let hex = format!("{}{}", hex1, hex2);
+                    let decoded_byte = u8::from_str_radix(&hex, 16).map_err(|_| {
+                        AppError::Invalid("Invalid hex in percent-encoding".to_string())
+                    })?;
+                    output.push(decoded_byte as char);
+                }
+                '+' => output.push(' '),
+                _ => output.push(c),
+            }
+        }
+
+        Ok(Url(output))
+    }
+}
+
+impl Deref for Url {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for Url {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// Represents all HTTP methods
 #[derive(PartialEq, Debug)]
@@ -64,7 +119,7 @@ impl Display for HttpMethod {
 
 /// A `Request` is an abstraction of an HTTP Request and its contents
 pub(crate) struct Request {
-    pub(crate) path: String,
+    pub(crate) path: Url,
     pub(crate) method: HttpMethod,
     http_version: String,
     headers: HashMap<String, String>,
@@ -119,7 +174,7 @@ impl Request {
                     .get(HttpHeader::CONTENT_LENGTH)
                     .map(|value| value.parse::<usize>())
                     // If for some reason, there is no content length header, default to 50MB
-                    .unwrap_or(Ok(MAX_REQUEST_BODY_SIZE)) 
+                    .unwrap_or(Ok(MAX_REQUEST_BODY_SIZE))
                     .unwrap_or(MAX_REQUEST_BODY_SIZE);
                 // Drain the request body before writing a response to the stream
                 Self::drain_body(&mut buf_reader, content_length)?;
@@ -143,9 +198,7 @@ impl Request {
     ///
     /// The `request_line` is split on whitespace, the first three parts parsed accordingly and
     /// returned as a tuple of 3 if all parsings succeed. Otherwise, an error is returned
-    fn extract_request_line(
-        request_line: String,
-    ) -> Result<(HttpMethod, String, String), AppError> {
+    fn extract_request_line(request_line: String) -> Result<(HttpMethod, Url, String), AppError> {
         let mut parts = request_line.split_whitespace();
 
         let method: HttpMethod = parts
@@ -153,10 +206,11 @@ impl Request {
             .ok_or(AppError::Invalid("Could not find method".to_string()))?
             .to_string()
             .try_into()?;
-        let path = parts
-            .next()
-            .ok_or(AppError::Invalid("Could not find path".to_string()))?
-            .to_string();
+        let path = Url::try_new(
+            parts
+                .next()
+                .ok_or(AppError::Invalid("Could not find path".to_string()))?,
+        )?;
         let http_version = parts
             .next()
             .ok_or(AppError::Invalid("Could not find http_version".to_string()))?
@@ -261,16 +315,16 @@ impl Request {
     }
 
     /// Drains a `TCPStream` of its body
-    /// 
+    ///
     /// Arguments:
     /// - **reader**: a mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
     /// - **content_length**: The length of the body to be drained
-    /// 
-    /// This method makes sure a request body is read, in case of a failure while extracting the body.  
-    /// Failure to read the request body before responding can lead to the client not knowing to 
-    /// expect a response and closing the connection early.  
-    /// 
-    /// An 8KB buffer is created and the stream is repeatedly read into it, overwriting the last read, 
+    ///
+    /// This method makes sure a request body is read, in case of a failure while extracting the body.
+    /// Failure to read the request body before responding can lead to the client not knowing to
+    /// expect a response and closing the connection early.
+    ///
+    /// An 8KB buffer is created and the stream is repeatedly read into it, overwriting the last read,
     /// until the stream has no more bytes to be read, indicating the body has been successfully drained.
     fn drain_body(
         reader: &mut BufReader<&mut TcpStream>,
@@ -656,7 +710,7 @@ impl Display for Response {
 #[cfg(test)]
 mod tests {
     use crate::Request;
-    use crate::http::HttpMethod;
+    use crate::http::{HttpMethod, Url};
     use std::io::{BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
@@ -672,7 +726,7 @@ mod tests {
                 let request = Request::try_new(buf_reader).expect("Could not parse request");
 
                 assert_eq!(request.method, HttpMethod::Get);
-                assert_eq!(request.path, String::from("/home"));
+                assert_eq!(request.path, Url::try_new("/home").unwrap());
                 assert_eq!(request.http_version, "HTTP/1.1");
                 assert_eq!(request.headers.len(), 3);
                 assert_eq!(request.headers.get("Host").unwrap(), "localhost");

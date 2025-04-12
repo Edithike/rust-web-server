@@ -2,8 +2,8 @@ use crate::common::{AppError, FileManager};
 use crate::http::{
     HttpHeader, HttpMethod, HttpStatus, Request, RequestBody, Response, ResponseBody,
 };
-use crate::{log_error, Time};
 use crate::warn;
+use crate::{Time, log_error};
 use std::path::{Path, PathBuf};
 
 /// This stores the HTML templates as strings in the binary during compile time, reducing the
@@ -243,7 +243,7 @@ impl Router {
             (HttpMethod::Post, "/upload") => RequestHandler::upload_file(request.body),
             _ => Ok(ErrorHandler::handle_invalid_page_request(
                 request.method,
-                request.path,
+                request.path.clone(),
             )),
         }
     }
@@ -268,7 +268,7 @@ impl ErrorHandler {
     pub(crate) fn handle_bad_request(error_message: String) -> Response {
         let template = Templates::BAD_REQUEST;
         let html = template.replace("{{ERROR_MESSAGE}}", error_message.as_str());
-        
+
         Response::builder()
             .status(HttpStatus::NotFound)
             .body(ResponseBody::Text(html))

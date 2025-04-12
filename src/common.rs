@@ -1,5 +1,5 @@
-use crate::http::ResponseBody;
 use crate::LOCKS;
+use crate::http::ResponseBody;
 use std::fmt::{Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -17,7 +17,7 @@ macro_rules! log {
             let timestamp = Time::get_current_timestamp();
             let date_string = Time::get_date_string_from_timestamp(timestamp);
             let log_message = format!($($arg)*);
-            
+
             // Write to log file
             FileManager::append_to_log_file(format!("[INFO] {}: {}", date_string, log_message));
             // Print the log message
@@ -36,7 +36,7 @@ macro_rules! warn {
             let timestamp = Time::get_current_timestamp();
             let date_string = Time::get_date_string_from_timestamp(timestamp);
             let log_message = format!($($arg)*);
-            
+
             // Write to log file
             FileManager::append_to_log_file(format!("[WARN] {}: {}", date_string, log_message));
             // Print the log message
@@ -264,10 +264,10 @@ impl FileManager {
 
     pub(crate) fn append_to_log_file(line: String) {
         let _mutex_guard = LOCKS.append_log.lock().unwrap();
-        
+
         let mut line = line;
         line.push_str("\n");
-        
+
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
