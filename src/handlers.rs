@@ -265,10 +265,13 @@ impl ErrorHandler {
 
     /// Handles cases where the client does not send a valid request body.
     /// A 400 status code is returned, along with an HTML template that shows the error.
-    pub(crate) fn handle_bad_request() -> Response {
+    pub(crate) fn handle_bad_request(error_message: String) -> Response {
+        let template = Templates::BAD_REQUEST;
+        let html = template.replace("{{ERROR_MESSAGE}}", error_message.as_str());
+        
         Response::builder()
             .status(HttpStatus::NotFound)
-            .body(ResponseBody::Text(Templates::BAD_REQUEST.to_string()))
+            .body(ResponseBody::Text(html))
             .build()
     }
 
@@ -311,7 +314,7 @@ impl ErrorHandler {
         match app_error {
             AppError::Invalid(error) => {
                 warn!("{}", error);
-                Self::handle_bad_request()
+                Self::handle_bad_request(error)
             }
             AppError::NotFound(error) => {
                 warn!("{}", error);

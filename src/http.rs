@@ -6,6 +6,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 
+/// Limits the file size possible to upload to 50MB, to avoid very large files
+const MAX_REQUEST_BODY_SIZE: usize = 50 * 1024 * 1024;
+
 /// Represents all HTTP methods
 #[derive(PartialEq, Debug)]
 pub(crate) enum HttpMethod {
@@ -99,7 +102,8 @@ impl Request {
     ///
     /// The `BufReader`'s first line is read into a string, and the request line is extracted from that.
     /// It is then used to extract the headers from the next couple of lines.
-    /// And finally, used to extract the request body.
+    /// And finally, used to extract the request body. If extracting the body fails, the body is drained,
+    /// in case it was unread, as this could lead to unexpected behavior.
     pub(crate) fn try_new(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Request, AppError> {
         let mut line = String::new();
 
@@ -108,7 +112,20 @@ impl Request {
             .map_err(|_| AppError::IO("Error reading request".to_string()))?;
         let (method, path, http_version) = Self::extract_request_line(line)?;
         let headers = Self::extract_headers(&mut buf_reader)?;
-        let body = Self::extract_body(&mut buf_reader, &headers)?;
+        let body = match Self::extract_body(&mut buf_reader, &headers) {
+            Ok(body) => body,
+            Err(e) => {
+                let content_length = headers
+                    .get(HttpHeader::CONTENT_LENGTH)
+                    .map(|value| value.parse::<usize>())
+                    // If for some reason, there is no content length header, default to 50MB
+                    .unwrap_or(Ok(MAX_REQUEST_BODY_SIZE)) 
+                    .unwrap_or(MAX_REQUEST_BODY_SIZE);
+                // Drain the request body before writing a response to the stream
+                Self::drain_body(&mut buf_reader, content_length)?;
+                return Err(e);
+            }
+        };
 
         Ok(Request {
             path,
@@ -242,6 +259,41 @@ impl Request {
             .collect::<Vec<_>>()
             .join("-")
     }
+
+    /// Drains a `TCPStream` of its body
+    /// 
+    /// Arguments:
+    /// - **reader**: a mutable reference to a `BufReader` of a mutable reference to a `TcpStream`
+    /// - **content_length**: The length of the body to be drained
+    /// 
+    /// This method makes sure a request body is read, in case of a failure while extracting the body.  
+    /// Failure to read the request body before responding can lead to the client not knowing to 
+    /// expect a response and closing the connection early.  
+    /// 
+    /// An 8KB buffer is created and the stream is repeatedly read into it, overwriting the last read, 
+    /// until the stream has no more bytes to be read, indicating the body has been successfully drained.
+    fn drain_body(
+        reader: &mut BufReader<&mut TcpStream>,
+        content_length: usize,
+    ) -> Result<(), AppError> {
+        let mut buffer = [0u8; 8192];
+        let mut remaining = content_length;
+
+        while remaining > 0 {
+            let to_read = std::cmp::min(remaining, buffer.len());
+            let bytes_read = reader
+                .read(&mut buffer[..to_read])
+                .map_err(|e| AppError::IO(e.to_string()))?;
+
+            if bytes_read == 0 {
+                break; // client closed connection early
+            }
+
+            remaining -= bytes_read;
+        }
+
+        Ok(())
+    }
 }
 
 /// This represents a contract that all body extractors should fulfill
@@ -266,11 +318,6 @@ trait BodyExtractor {
 /// A type that helps extract a body from a multipart/form
 struct MultiPartFormExtractor;
 
-impl MultiPartFormExtractor {
-    /// Limits the file size possible to upload to 50MB, to avoid very large files
-    const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
-}
-
 impl BodyExtractor for MultiPartFormExtractor {
     type Body = BufferedFile;
 
@@ -294,7 +341,7 @@ impl BodyExtractor for MultiPartFormExtractor {
         content_type: String,
         content_length: usize,
     ) -> Result<Self::Body, AppError> {
-        if content_length > Self::MAX_FILE_SIZE {
+        if content_length > MAX_REQUEST_BODY_SIZE {
             return Err(AppError::Invalid(
                 "File size exceeds 50MB limit".to_string(),
             ));

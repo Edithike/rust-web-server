@@ -7,9 +7,9 @@ use crate::common::{AppError, Time};
 use crate::handlers::{ErrorHandler, Router};
 use crate::http::{Request, Response};
 use std::io::{BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::{fs, thread};
 
 /// A `Job` is a type alias for any function that runs once and implements `Send` and `static`
@@ -166,14 +166,14 @@ impl Server {
             }
             Err(app_error) => map_error_to_response_bytes(app_error),
         };
-        
+
         stream
             .write_all(&response_bytes)
             .map_err(|e| format!("Error writing response to stream: {}", e))?;
 
         stream
-            .flush()
-            .map_err(|e| format!("Error flushing stream: {}", e))?;
+            .shutdown(Shutdown::Both)
+            .map_err(|e| format!("Error shutting down stream: {}", e))?;
         Ok(())
     }
 }
@@ -181,7 +181,7 @@ impl Server {
 /// This ensures that the uploads directory always exists.  
 /// A `Path` is created with the uploads directory path, and if it does not exist, it is created
 /// before the server starts listening.  
-/// 
+///
 /// This is required for the binary to be self-sufficient.
 fn ensure_uploads_dir() {
     let uploads_path = Path::new("uploads");
@@ -196,11 +196,9 @@ struct Locks {
     append_log: Mutex<()>,
 }
 
-static LOCKS: LazyLock<Locks> = LazyLock::new(|| {
-    Locks {
-        create_file: Mutex::new(()),
-        append_log: Mutex::new(()),
-    }
+static LOCKS: LazyLock<Locks> = LazyLock::new(|| Locks {
+    create_file: Mutex::new(()),
+    append_log: Mutex::new(()),
 });
 
 fn main() {
